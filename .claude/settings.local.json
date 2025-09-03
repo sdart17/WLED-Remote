@@ -21,7 +21,10 @@
       "Bash(xcopy:*)",
       "Bash(timeout 300 arduino-cli compile:*)",
       "Bash(/dev/null)",
-      "Bash(grep:*)"
+      "Bash(grep:*)",
+      "Bash(git commit:*)",
+      "Bash(timeout 30 arduino-cli compile:*)",
+      "Bash(timeout 60 arduino-cli compile:*)"
     ],
     "deny": [],
     "ask": []

@@ -6,11 +6,17 @@
 // CRITICAL: Define config constants here to ensure availability before use
 // These mirror the definitions in config.ino but are needed earlier
 #define ENABLE_BRIGHTNESS_PAGE false
+#define ENABLE_WLED_SELECTION_PAGE true
 
-#if ENABLE_BRIGHTNESS_PAGE
-static const int TOTAL_UI_PAGES = 4;  // Pages 0, 1, 2, 3 (includes brightness page)
+// Calculate total pages based on enabled optional pages
+#if ENABLE_BRIGHTNESS_PAGE && ENABLE_WLED_SELECTION_PAGE
+static const int TOTAL_UI_PAGES = 5;  // Pages 0, 1, 2, 3, 4 (brightness + WLED selection)
+#elif ENABLE_BRIGHTNESS_PAGE && !ENABLE_WLED_SELECTION_PAGE  
+static const int TOTAL_UI_PAGES = 4;  // Pages 0, 1, 2, 3 (brightness only)
+#elif !ENABLE_BRIGHTNESS_PAGE && ENABLE_WLED_SELECTION_PAGE
+static const int TOTAL_UI_PAGES = 4;  // Pages 0, 1, 3, 4 (WLED selection only)
 #else
-static const int TOTAL_UI_PAGES = 3;  // Pages 0, 1, 3 (skips brightness page)
+static const int TOTAL_UI_PAGES = 3;  // Pages 0, 1, 3 (no optional pages)
 #endif
 
 #include <WiFi.h>  // Need this for WiFi.RSSI() call in loop()
@@ -322,6 +328,7 @@ uint8_t WLEDClient_getFailureCount();
 bool WLEDClient_testConnection();
 void WLEDClient_cleanup();
 void WLEDClient_debugTest(); // DEBUG function
+void WLEDClient_fetchFriendlyNames();
 // NON-BLOCKING queue API
 bool WLEDClient_queuePreset(uint8_t preset);
 bool WLEDClient_queueQuickLoad(uint8_t slot);
@@ -354,6 +361,8 @@ void TwistManager_syncWithWLED();
 void TwistManager_onProgramChange();
 bool TwistManager_isInPowerSavingMode();
 void TwistManager_fetchWLEDPalette();
+void TwistManager_showHTTPFeedback(bool success);
+void TwistManager_updateHTTPFeedback();
 
 // UI Manager - ENHANCED
 void UIManager_init();
@@ -611,6 +620,7 @@ void setup() {
     if (WiFiManager_isConnected()) {
       WLEDClient_initQuickLoads();
       WLEDClient_testConnection();
+      WLEDClient_fetchFriendlyNames(); // Fetch WLED instance names
     }
   }
 

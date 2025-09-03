@@ -143,6 +143,13 @@ static const int TWIST_BRIGHTNESS_STEP = 5;
 static const int TWIST_MIN_BRIGHTNESS = 1;
 static const int TWIST_MAX_BRIGHTNESS = 255;
 
+// HTTP Command Feedback variables
+static bool TwistManager_feedbackActive = false;
+static uint32_t TwistManager_feedbackStartTime = 0;
+static bool TwistManager_feedbackSuccess = false;
+static uint8_t TwistManager_feedbackFlashCount = 0;
+static uint32_t TwistManager_lastFlashTime = 0;
+
 #if TWIST_ENABLE_JSON_LIVE
 static uint32_t TwistManager_lastLiveSample = 0;
 #endif
@@ -206,6 +213,9 @@ void TwistManager_update() {
 
   // ENHANCED: Handle button press for power management
   TwistManager_handlePowerToggle();
+  
+  // Update HTTP command feedback
+  TwistManager_updateHTTPFeedback();
   
   // Periodic palette refresh to keep encoder LED colors in sync
   TwistManager_periodicPaletteRefresh();
@@ -320,6 +330,11 @@ bool TwistManager_isInPowerSavingMode() {
 // ---------- Internal implementations ----------
 static void TwistManager_updateLED() {
   if (!TwistManager_available) return;
+
+  // CRITICAL: Don't override colors during HTTP feedback
+  if (TwistManager_feedbackActive) {
+    return; // Let feedback system control colors
+  }
 
   // Check power mode - if in power saving, turn off encoder LED
   if (TwistManager_powerMode == TWIST_POWER_SAVING_LOCAL) {
@@ -494,7 +509,17 @@ static void TwistManager_exitPowerSavingMode() {
 
 static bool TwistManager_fetchWLEDPowerState() {
   JsonDocument doc;
-  if (!WLEDClient_fetchWledState(doc)) { Serial.println("[TWIST] Fallback: power fetch failed"); return false; }
+  if (!WLEDClient_fetchWledState(doc)) { 
+    Serial.println("[TWIST] Fallback: power fetch failed"); 
+    return false; 
+  }
+  
+  // CRITICAL FIX: Defensive JSON access after successful fetch
+  if (!doc["state"].is<JsonObject>()) {
+    Serial.println("[TWIST] Invalid state object in JSON");
+    return false;
+  }
+  
   bool newState = doc["state"]["on"].is<bool>() ? (bool)doc["state"]["on"] : TwistManager_wledPowerState;
   if (newState != TwistManager_wledPowerState) {
     TwistManager_wledPowerState = newState;
@@ -585,7 +610,7 @@ static void TwistManager_tryJsonLiveSample() {
   http.setReuse(false);
 
   String url = String("http://") + WLED_IP + "/json/live";
-  if (!http.begin(client, url)) { http.end(); Serial.println("[TWIST] live: begin() failed"); return; }
+  if (!http.begin(client, url)) { Serial.println("[TWIST] live: begin() failed"); return; }
 
   int code = http.GET();
   if (code != 200) { http.end(); Serial.printf("[TWIST] live: GET failed (%d)\n", code); return; }
@@ -658,6 +683,13 @@ void TwistManager_fetchWLEDPalette() {
     return; 
   }
 
+  // CRITICAL FIX: Defensive JSON access - check state object first
+  if (!doc["state"].is<JsonObject>()) {
+    Serial.println("[TWIST] Fallback: invalid state object");
+    TwistManager_useFallbackROYGBIV(); 
+    return; 
+  }
+  
   if (!doc["state"]["seg"].is<JsonArray>()) { 
     Serial.println("[TWIST] Fallback: no seg[] in state"); 
     TwistManager_useFallbackROYGBIV(); 
@@ -725,4 +757,78 @@ void TwistManager_exitPowerSave() {
                              TwistManager_currentDisplayColor.g,
                              TwistManager_currentDisplayColor.b);
   Serial.println("[TWIST] Exited power save mode");
+}
+
+// HTTP Command Feedback - Flash encoder LED to indicate success/failure
+
+void TwistManager_showHTTPFeedback(bool success) {
+  if (!TwistManager_available) return;
+  
+  Serial.printf("[TWIST] HTTP feedback starting: %s (success=%d)\n", success ? "SUCCESS" : "FAILURE", success);
+  
+  // Store original color to restore later
+  static TwistRGB originalColor = TwistManager_currentDisplayColor;
+  if (!TwistManager_feedbackActive) {
+    originalColor = TwistManager_currentDisplayColor;
+  }
+  
+  // Start feedback sequence
+  TwistManager_feedbackActive = true;
+  TwistManager_feedbackSuccess = success;
+  TwistManager_feedbackStartTime = millis();
+  TwistManager_feedbackFlashCount = 0;
+  TwistManager_lastFlashTime = millis();
+  
+  // Flash immediately with debug
+  if (success) {
+    TwistManager_twist.setColor(0, 255, 0); // Bright green for success
+    Serial.println("[TWIST] Starting with GREEN flash");
+  } else {
+    TwistManager_twist.setColor(255, 0, 0); // Bright red for failure
+    Serial.println("[TWIST] Starting with RED flash");
+  }
+}
+
+void TwistManager_updateHTTPFeedback() {
+  if (!TwistManager_feedbackActive || !TwistManager_available) return;
+  
+  uint32_t now = millis();
+  uint32_t elapsed = now - TwistManager_feedbackStartTime;
+  
+  // Total sequence: 2 flashes in 1.4 seconds, then 600ms pause, then restore
+  if (elapsed >= 2000) {
+    // Sequence complete - restore original color
+    TwistManager_feedbackActive = false;
+    TwistManager_twist.setColor(TwistManager_currentDisplayColor.r,
+                               TwistManager_currentDisplayColor.g,
+                               TwistManager_currentDisplayColor.b);
+    Serial.println("[TWIST] HTTP feedback complete");
+    return;
+  }
+  
+  if (elapsed < 1400) {
+    // First 1.4 seconds: 2 slow flashes (flash every 700ms, on for 200ms, off for 500ms)
+    uint32_t flashPeriod = 700; // 2 flashes in 1400ms = 700ms per flash cycle
+    uint32_t flashIndex = elapsed / flashPeriod;
+    uint32_t flashPhase = elapsed % flashPeriod;
+    
+    if (flashIndex < 2) { // First 2 flashes
+      if (flashPhase < 200) {
+        // Flash on (first 200ms of each flash cycle - longer on time)
+        if (TwistManager_feedbackSuccess) {
+          TwistManager_twist.setColor(0, 255, 0); // Bright green for success
+          Serial.println("[TWIST] Flashing GREEN");
+        } else {
+          TwistManager_twist.setColor(255, 0, 0); // Bright red for failure  
+          Serial.println("[TWIST] Flashing RED");
+        }
+      } else {
+        // Flash off (remaining 500ms of flash cycle - longer pause)
+        TwistManager_twist.setColor(0, 0, 0); // Off
+      }
+    }
+  } else {
+    // Second 1 second: pause (LED off)
+    TwistManager_twist.setColor(0, 0, 0);
+  }
 }

@@ -34,6 +34,7 @@ static uint32_t UIManager_lastSwipeTime = 0;
 static bool UIManager_needsFullRepaint = true;
 static int UIManager_lastBrightnessValue = -1;
 static bool UIManager_lastScreenState = true;
+static bool UIManager_earlyBootMode = true;
 
 // OPTIMIZED: Button press tracking for visual feedback
 static int UIManager_pressedButtonIndex = -1;
@@ -68,29 +69,42 @@ static IconBtn UIManager_page3Buttons[] = {
 };
 static const int UIManager_PAGE3_BTN_COUNT = 2;
 
-// ENHANCED: Page mapping function to handle skipped brightness page
+// ENHANCED: Page mapping function to handle optional pages (brightness + WLED selection)
 static int UIManager_mapToPhysicalPage(int logicalPage) {
-#if ENABLE_BRIGHTNESS_PAGE
-  return logicalPage; // Direct mapping when brightness page is enabled
-#else
-  // Skip brightness page (page 2) when disabled
-  if (logicalPage >= 2) {
-    return logicalPage + 1; // Map page 2 -> 3, etc.
+  // Page layout:
+  // Physical 0: Main controls (logical 0)
+  // Physical 1: Navigation controls (logical 1) 
+  // Physical 2: Brightness slider (if ENABLE_BRIGHTNESS_PAGE)
+  // Physical 3: System controls (logical 2 if no brightness, logical 3 if brightness enabled)
+  // Physical 4: WLED selection (if ENABLE_WLED_SELECTION_PAGE)
+  
+  if (logicalPage <= 1) {
+    return logicalPage; // Pages 0,1 always direct mapping
   }
-  return logicalPage; // Pages 0,1 remain unchanged
-#endif
+  
+  int physicalPage = logicalPage;
+  
+  // If brightness page is disabled, shift everything after page 1
+  if (!ENABLE_BRIGHTNESS_PAGE && logicalPage >= 2) {
+    physicalPage++; // Skip physical page 2 (brightness)
+  }
+  
+  return physicalPage;
 }
 
 static int UIManager_mapFromPhysicalPage(int physicalPage) {
-#if ENABLE_BRIGHTNESS_PAGE
-  return physicalPage; // Direct mapping when brightness page is enabled
-#else
-  // Reverse mapping when brightness page is disabled
-  if (physicalPage >= 3) {
-    return physicalPage - 1; // Map physical page 3 -> logical page 2
+  if (physicalPage <= 1) {
+    return physicalPage; // Pages 0,1 always direct mapping
   }
-  return physicalPage; // Pages 0,1 remain unchanged
-#endif
+  
+  int logicalPage = physicalPage;
+  
+  // If brightness page is disabled, shift everything after page 1
+  if (!ENABLE_BRIGHTNESS_PAGE && physicalPage >= 3) {
+    logicalPage--; // Map physical page 3+ -> logical page 2+
+  }
+  
+  return logicalPage;
 }
 
 bool UIManager_hitTest(const IconBtn& b, int16_t x, int16_t y) {
@@ -125,15 +139,10 @@ void UIManager_drawIconButton(const IconBtn& btn, bool pressed) {
 
   // CRITICAL FIX: During early boot (first 15 seconds), only use fallback text
   // This prevents hanging on SD card access when icons are preloaded but SD is unmounted
-  static bool earlyBoot = true;
-  if (earlyBoot && millis() > 15000) {
-    earlyBoot = false;
-    Serial.println("[UI] Exiting early boot mode - icons now available");
-  }
 
   bool iconDrawn = false;
   
-  if (!earlyBoot) {
+  if (!UIManager_earlyBootMode) {
     const char* iconToLoad = (pressed && btn.iconPressedPath) ? btn.iconPressedPath : btn.iconPath;
     if (iconToLoad && SDManager_isAvailable()) {
       iconDrawn = SDManager_drawBMPFromSD(iconToLoad, btn.x, btn.y);
@@ -249,8 +258,12 @@ void UIManager_paintPage() {
     tft.fillScreen(ST77XX_BLACK);
     Serial.println("[UI] Direct screen clear complete");
     
-    // Skip battery drawing during early boot - it might be causing the hang
-    Serial.println("[UI] Skipping battery status during early boot");
+    // Only skip battery drawing during early boot mode
+    if (!UIManager_earlyBootMode) {
+      DisplayManager_drawBatteryStatus();
+    } else {
+      Serial.println("[UI] Skipping battery status during early boot");
+    }
     
     UIManager_needsFullRepaint = false;
     Serial.println("[UI] Screen initialization complete");
@@ -311,6 +324,14 @@ void UIManager_paintPage() {
         UIManager_drawIconButton(UIManager_page3Buttons[i], false);
       }
       break;
+      
+#if ENABLE_WLED_SELECTION_PAGE
+    case 4:
+      Serial.println("[UI] Drawing WLED selection page...");
+      UIManager_drawWLEDSelectionPage();
+      Serial.println("[UI] WLED selection page complete");
+      break;
+#endif
   }
 }
 
@@ -522,6 +543,10 @@ void UIManager_handleTouch(int16_t x, int16_t y, bool isPress, bool isRelease) {
 #endif
       } else if (physicalPage == 3) {
         UIManager_handlePage3Touch(x, y);
+#if ENABLE_WLED_SELECTION_PAGE
+      } else if (physicalPage == 4) {
+        UIManager_handleWLEDSelectionTouch(x, y);
+#endif
       }
     }
     return;
@@ -545,6 +570,90 @@ void UIManager_handleTouch(int16_t x, int16_t y, bool isPress, bool isRelease) {
   }
 #endif // ENABLE_BRIGHTNESS_PAGE
 }
+
+#if ENABLE_WLED_SELECTION_PAGE
+// WLED Selection Page - Display list of WLED instances with friendly names
+void UIManager_drawWLEDSelectionPage() {
+  auto& tft = DisplayManager_getTFT();
+  
+  // Draw header
+  tft.setTextSize(2);
+  tft.setTextColor(ST77XX_WHITE, ST77XX_BLACK);
+  tft.setCursor(10, 20);
+  tft.print("WLED Devices:");
+  
+  // Draw current selection indicator
+  tft.setTextSize(1);
+  tft.setCursor(10, 45);
+  tft.printf("Current: %s", WLED_INSTANCES[CURRENT_WLED_INSTANCE].friendlyName);
+  
+  // Draw instance list - max 8 instances to fit on screen
+  uint8_t maxInstances = min(WLED_INSTANCE_COUNT, (uint8_t)8);
+  for (uint8_t i = 0; i < maxInstances; i++) {
+    int16_t y = 70 + (i * 25);
+    
+    // Highlight current selection
+    bool isSelected = (i == CURRENT_WLED_INSTANCE);
+    uint16_t bgColor = isSelected ? ST77XX_WHITE : ST77XX_BLACK;
+    uint16_t fgColor = isSelected ? ST77XX_BLACK : ST77XX_WHITE;
+    
+    // Draw selection background
+    tft.fillRect(5, y - 2, 230, 20, bgColor);
+    tft.drawRect(5, y - 2, 230, 20, ST77XX_WHITE);
+    
+    // Draw instance info
+    tft.setTextColor(fgColor, bgColor);
+    tft.setCursor(10, y);
+    
+    // Show friendly name if available, fallback to IP
+    const char* displayName = WLED_INSTANCES[i].friendlyName;
+    if (!displayName || strlen(displayName) == 0 || strcmp(displayName, "Primary WLED") == 0 || strcmp(displayName, "Secondary WLED") == 0) {
+      // Show IP if no custom friendly name retrieved yet
+      tft.printf("%d: %s", i + 1, WLED_INSTANCES[i].ip);
+    } else {
+      tft.printf("%d: %s", i + 1, displayName);
+    }
+    
+    // Show IP on second line if we have a custom friendly name
+    if (displayName && strlen(displayName) > 0 && strcmp(displayName, "Primary WLED") != 0 && strcmp(displayName, "Secondary WLED") != 0) {
+      tft.setCursor(15, y + 10);
+      tft.setTextSize(1);
+      tft.printf("  (%s)", WLED_INSTANCES[i].ip);
+    }
+  }
+  
+  // Instructions
+  tft.setTextColor(ST77XX_WHITE, ST77XX_BLACK);
+  tft.setTextSize(1);
+  tft.setCursor(10, 290);
+  tft.print("Touch to select device");
+}
+
+// Handle touch events on WLED selection page
+void UIManager_handleWLEDSelectionTouch(int16_t x, int16_t y) {
+  // Check if touch is within device list area
+  uint8_t maxInstances = min(WLED_INSTANCE_COUNT, (uint8_t)8);
+  
+  for (uint8_t i = 0; i < maxInstances; i++) {
+    int16_t itemY = 70 + (i * 25);
+    
+    // Check if touch is within this item's bounds
+    if (x >= 5 && x <= 235 && y >= (itemY - 2) && y <= (itemY + 18)) {
+      if (i != CURRENT_WLED_INSTANCE) {
+        // Switch to selected instance
+        CURRENT_WLED_INSTANCE = i;
+        Serial.printf("[UI] Switched to WLED instance %d: %s (%s)\n", 
+                      i, WLED_INSTANCES[i].friendlyName, WLED_INSTANCES[i].ip);
+        
+        // Force UI repaint to show new selection
+        UIManager_needsFullRepaint = true;
+        UIManager_paintPage();
+      }
+      break;
+    }
+  }
+}
+#endif // ENABLE_WLED_SELECTION_PAGE
 
 void UIManager_init() {
   UIManager_needsFullRepaint = true;
@@ -582,6 +691,18 @@ void UIManager_postInit() {
 
 // OPTIMIZED: Smart UI updates with button press cleanup
 void UIManager_update() {
+  // Check if we should exit early boot mode
+  if (UIManager_earlyBootMode && millis() > 15000) {
+    UIManager_earlyBootMode = false;
+    UIManager_needsFullRepaint = true;
+    Serial.println("[UI] Exiting early boot mode - icons now available");
+  }
+  
+  // Check if repaint is needed (e.g., after exiting early boot mode)
+  if (UIManager_needsFullRepaint && DisplayManager_isScreenOn()) {
+    UIManager_paintPage();
+  }
+  
   // Handle button press visual feedback timeout
   if (UIManager_pressedButtonIndex >= 0 && 
       millis() - UIManager_buttonPressTime > BUTTON_PRESS_FEEDBACK_MS) {

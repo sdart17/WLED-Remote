@@ -13,6 +13,12 @@
 #define ENABLE_BRIGHTNESS_PAGE false
 #endif
 
+// Set to true to enable WLED instance selection page
+// Set to false to use only the default first instance
+#ifndef ENABLE_WLED_SELECTION_PAGE
+#define ENABLE_WLED_SELECTION_PAGE true
+#endif
+
 #include <Arduino.h>
 #include <SPI.h>
 #include <Wire.h>
@@ -29,13 +35,26 @@
 static const char* WIFI_SSID = "Darts";
 static const char* WIFI_PWD  = "abcdef1234";
 
-// ───────── WLED Configuration - AGGRESSIVE TIMEOUTS ─────────
-static const char* WLED_IP   = "192.168.6.220"; // Scott-12v
-//static const char* WLED_IP   = "192.168.7.80"; // Anycubic-12v
+// ───────── WLED Configuration - Multi-Instance Support ─────────
+typedef struct {
+  const char* ip;
+  const char* friendlyName;  // Will be populated from WLED /json/info
+} WLEDInstance;
+
+// WLED instance list - add your WLED devices here
+static WLEDInstance WLED_INSTANCES[] = {
+  {"192.168.6.220", "Scott Bedroom"},
+  {"192.168.4.42", "Hexagons"},
+  {"192.168.4.76", "Seattle Skyline"},
+};
+
+static const uint8_t WLED_INSTANCE_COUNT = sizeof(WLED_INSTANCES) / sizeof(WLEDInstance);
+static uint8_t CURRENT_WLED_INSTANCE = 0;  // Default to first instance
+
 static const uint16_t HTTP_TIMEOUT_MS = 500; // AGGRESSIVE: Ultra-fast timeout
 
-#undef  WLED_IP
-#define WLED_IP "192.168.6.220"   // <- put your WLED's IP here
+// Legacy compatibility - points to current selected instance
+#define WLED_IP (WLED_INSTANCES[CURRENT_WLED_INSTANCE].ip)
 
 // ───────── PHASE 3: WebSocket WLED Communication ─────────
 #define ENABLE_WEBSOCKET_WLED false       // DISABLED: Battery drain and connection instability
@@ -114,7 +133,17 @@ static const uint32_t SD_SPI_HZ = 40000000; // OPTIMIZED: Increased from 20MHz
 // ───────── Display Constants ─────────
 static const uint16_t SCREEN_WIDTH = 240;
 static const uint16_t SCREEN_HEIGHT = 320;
-static const uint32_t SCREEN_TIMEOUT_MS = 5UL * 60UL * 1000UL; // Configurable: 5 minutes
+// Dynamic screen timeout based on power source
+static const uint32_t SCREEN_TIMEOUT_BATTERY_MS = 30UL * 1000UL;  // 30 seconds on battery
+static const uint32_t SCREEN_TIMEOUT_PLUGGED_MS = 5UL * 60UL * 1000UL;  // 5 minutes when plugged in
+
+// Function to get current screen timeout based on power source
+inline uint32_t getScreenTimeout() {
+  return PowerManager_isExternalPower() ? SCREEN_TIMEOUT_PLUGGED_MS : SCREEN_TIMEOUT_BATTERY_MS;
+}
+
+// Legacy compatibility - use function instead
+#define SCREEN_TIMEOUT_MS getScreenTimeout()
 
 // ───────── UI Constants - UPDATED ─────────
 // Dynamic page count based on brightness page setting - USE DIFFERENT NAME

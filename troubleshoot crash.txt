@@ -1,0 +1,232 @@
+Help me troubleshoot the crash in this arduino project: 
+
+20:15:54.924 -> [BATTERY] Drawing EXTERNAL power state 
+20:15:55.606 -> [PWR] V=4131mV (92%), USB=Y, VChg=N, %Chg=N, Ext=3/3, Bat=0/2 -> EXTERNAL
+20:15:55.747 -> [JSON] parse error: InvalidInput
+20:15:55.747 -> [HTTP] Backoff: 228ms (failures: 1, jitter: +28ms)
+20:15:56.183 -> Guru Meditation Error: Core  0 panic'ed (LoadProhibited). Exception was unhandled.
+20:15:56.183 -> 
+20:15:56.183 -> Core  0 register dump:
+20:15:56.183 -> PC      : 0x4200f3dc  PS      : 0x00060a30  A0      : 0x820c0e78  A1      : 0x3fcb2040  
+20:15:56.183 -> A2      : 0x00000000  A3      : 0x3fcb207f  A4      : 0x00000001  A5      : 0x00000000  
+20:15:56.183 -> A6      : 0x00000065  A7      : 0x3fc9e834  A8      : 0x00000000  A9      : 0x3fcb2020  
+20:15:56.183 -> A10     : 0x00000000  A11     : 0x3fcb207f  A12     : 0x00000001  A13     : 0x72c20000  
+20:15:56.183 -> A14     : 0x3fcb202c  A15     : 0x3fcba1d8  SAR     : 0x0000000e  EXCCAUSE: 0x0000001c  
+20:15:56.183 -> EXCVADDR: 0x00000014  LBEG    : 0x40056f08  LEND    : 0x40056f12  LCOUNT  : 0x00000000  
+20:15:56.183 -> 
+20:15:56.183 -> 
+20:15:56.183 -> Backtrace: 0x4200f3d9:0x3fcb2040 0x420c0e75:0x3fcb2070 0x42019426:0x3fcb20a0 0x420194c1:0x3fcb20c0 0x420149da:0x3fcb20e0 0x42014fe6:0x3fcb2180 0x420150eb:0x3fcb21e0 0x4200b8e1:0x3fcb2200 0x4200c256:0x3fcb2240 0x4200c76e:0x3fcb22c0 0x4200cdb4:0x3fcb2300 0x4037fb25:0x3fcb2350
+20:15:56.183 -> 
+20:15:56.183 -> 
+20:15:56.183 -> 
+20:15:56.183 -> 
+20:15:56.183 -> ELF file SHA256: 79ccdb6df
+20:15:56.183 -> 
+20:15:56.183 -> Rebooting...
+20:15:56.183 -> ESP-ROM:esp32s3-20210327
+20:15:56.183 -> Build:Mar 27 2021
+20:15:56.183 -> rst:0xc (RTC_SW_CPU_RST),boot:0x2b (SPI_FAST_FLASH_BOOT)
+20:15:56.183 -> Saved PC:0x403769a9
+20:15:56.183 -> SPIWP:0xee
+20:15:56.183 -> mode:DIO, clock div:1
+20:15:56.228 -> load:0x3fce2820,len:0x1180
+20:15:56.228 -> load:0x403c8700,len:0xc2c
+20:15:56.228 -> load:0x403cb700,len:0x311c
+20:15:56.228 -> entry 0x403c88b8
+20:15:56.492 -> 
+20:15:56.492 -> [BOOT] Starting ENHANCED WLED Remote...
+
+ChatGPT said:
+Thought for 1m 23s
+
+Great clues in that log. Here’s what it’s telling us:
+
+You attempt an HTTP fetch → JSON parse fails ([JSON] parse error: InvalidInput), then almost immediately you hit a LoadProhibited on Core 0 with EXCVADDR: 0x00000014.
+
+On ESP32, LoadProhibited almost always means you dereferenced a null or dangling pointer (address near 0) — e.g., using a pointer you saved from a previous operation after its backing storage went away.
+
+Most likely root cause
+
+After the failed parse, some code path still uses data derived from the JSON — commonly:
+
+Storing a const char* from an ArduinoJson document (or from String.c_str()) into a global/struct and using it later after the document/String is out of scope.
+
+Accessing fields of a JsonVariant when deserializeJson() failed.
+
+Using vectors/arrays that weren’t populated due to the failure (indexing into an empty list).
+
+InvalidInput specifically means the response wasn’t valid JSON (often empty body, truncated chunked response, or an HTML 404/500 page), not a memory-size issue (NoMemory) — so you must bail out cleanly and avoid touching any JSON-derived pointers/fields.
+
+Fix it now (surgical, defensive changes)
+1) Never keep raw pointers from ArduinoJson
+
+Bad (dangling after doc dies):
+
+const char* name = doc["info"]["name"];   // pointer into doc memory
+state.hostName = name;                    // store and use later -> crash risk
+
+
+Good (copy into owned storage):
+
+state.hostName = String(doc["info"]["name"] | "");  // copy; safe if doc goes out of scope
+// or, if you use fixed char buffers:
+strlcpy(state.hostName, doc["info"]["name"] | "", sizeof(state.hostName));
+
+2) Hard guard the parse path and return early on error
+bool fetchWledJson(const String& url, DynamicJsonDocument& doc) {
+  WiFiClient client;               // local network: prefer plain client
+  HTTPClient http;
+  http.setTimeout(4000);
+  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+  if (!http.begin(client, url)) return false;
+
+  int code = http.GET();
+  if (code != HTTP_CODE_OK) {
+    // Optional: log code and content-type here
+    http.end();
+    return false;
+  }
+
+  // Optional: sanity check content type
+  String ctype = http.header("Content-Type");
+  if (!ctype.startsWith("application/json")) {
+    // Read a small sample to log what we actually got
+    String peek = http.getString();
+    // LOG: first 200 chars of peek
+    http.end();
+    return false;
+  }
+
+  auto* stream = http.getStreamPtr();
+  DeserializationError err = deserializeJson(doc, *stream, DeserializationOption::NestingLimit(12));
+  http.end();
+
+  if (err) {
+    // LOG: err.c_str()
+    return false;
+  }
+  return true;
+}
+
+3) Only update shared state when parse succeeds
+struct WledState {
+  bool valid = false;
+  String hostName;        // OWNED copies
+  String version;
+  // ... any arrays/vectors
+  uint32_t versionTag = 0; // bump on successful update
+};
+
+WledState gWled;
+
+void updateFromJson(const DynamicJsonDocument& doc) {
+  WledState next = gWled;        // start from previous (or default)
+  next.hostName = String(doc["info"]["name"] | "");
+  next.version  = String(doc["info"]["ver"]  | "");
+  // ... fill other fields safely
+
+  next.valid = true;
+  next.versionTag++;             // atomic if accessed cross-task
+  gWled = std::move(next);
+}
+
+void pollWled() {
+  DynamicJsonDocument doc(32*1024); // pick a sane size for your largest payload
+  if (fetchWledJson(baseUrl + "/json/state", doc)) {
+    updateFromJson(doc);
+  } else {
+    // DO NOT touch gWled fields here; leave last-good data
+    // Optionally set a flag so UI can show "stale"
+  }
+}
+
+4) Make readers robust
+
+Anywhere you render or use the state (UI, animations, etc.):
+
+if (!gWled.valid) {
+  // show placeholders; NEVER index vectors or deref pointers derived from JSON
+  return;
+}
+
+5) Don’t reuse HTTPClient/WiFiClient across failures
+
+Create them on the stack per call (as in the snippet) and always call http.end() on every path. This prevents use-after-close of client buffers.
+
+Why this matches your crash
+
+Parse fails → your code likely still accesses a pointer/field that was set when parse previously succeeded or set to nullptr during a failed update.
+
+EXCVADDR: 0x14 = reading *(nullptr + 0x14): classic struct/field access via a null pointer after an error path.
+
+The crash happens right after [HTTP] Backoff because the scheduler returns to UI/render code that expects JSON-derived state to be valid.
+
+Quick checks to confirm
+
+Search the project for any of these anti-patterns:
+
+const char* x = doc[...] then storing x in globals/structs.
+
+auto s = someString.c_str(); stored beyond the String’s scope.
+
+Using doc[...] (or arrays/vectors filled from it) without checking the parse result.
+
+Add a short log of the first 200 bytes of the failing response (status code + content-type). If you ever see HTML or empty body, you’ve found the InvalidInput cause.
+
+Temporarily force a parse failure (e.g., point at http://wled-sentiment.local/nope) and verify the device doesn’t crash with the above guards in place.
+
+If the failing endpoint is /presets.json
+
+It can 404 (HTML) or be temporarily unavailable while WLED writes FS. Treat non-200 and non-JSON as non-fatal and keep last-good data.
+
+Consider using /json/presets (HTTP API) if available in your WLED version; it’s sometimes more reliable than static FS reads.
+
+Optional: decode that backtrace to the exact line (Windows)
+
+In Arduino IDE enable Verbose output during compilation (File → Preferences).
+
+Note the path to the .elf.
+
+Run in PowerShell (adjust paths and addresses):
+
+& "C:\Users\scott\AppData\Local\Arduino15\packages\esp32\tools\esp-x32\2411\bin\xtensa-esp32s3-elf-addr2line.exe" `
+  -pfiaC -e "C:\path\to\your\sketch.elf" `
+  0x4200f3d9 0x420c0e75 0x42019426 0x420194c1 0x420149da 0x42014fe6 0x420150eb 0x4200b8e1 0x4200c256 0x4200c76e 0x4200cdb4
+
+
+That will tell you the exact function/line that dereferenced the null.
+
+Minimal “safe parse + state” helper (drop-in)
+// header
+struct SafeStr { String v; const char* c() const { return v.c_str(); } };
+
+struct RemoteState {
+  bool valid = false;
+  SafeStr name, ver;
+  uint32_t tag = 0;
+};
+extern RemoteState g;
+
+// cpp
+RemoteState g;
+
+static inline String JStr(JsonVariant v) { return String(v | ""); }
+
+bool loadState(const String& url) {
+  DynamicJsonDocument doc(24*1024);
+  if (!fetchWledJson(url, doc)) return false;
+
+  RemoteState next;
+  next.name.v = JStr(doc["info"]["name"]);
+  next.ver.v  = JStr(doc["info"]["ver"]);
+  next.valid = true;
+  next.tag = g.tag + 1;
+  g = std::move(next);
+  return true;
+}
+
+// usage in UI code:
+if (!g.valid) { /* render placeholders */ } else { /* use g.name.c(), g.ver.c() safely */ }
+
+
+If you paste the addr2line output (or the snippet where you populate/store JSON-derived strings), I’ll pinpoint the exact line and give you a targeted patch.

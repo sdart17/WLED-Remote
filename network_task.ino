@@ -52,6 +52,9 @@ void NetworkTask_taskFunction(void* parameter) {
   Serial.println("[NET_TASK] Initializing WLED client...");
   WLEDClient_initQuickLoads();
   
+  Serial.println("[NET_TASK] Fetching WLED instance names...");
+  WLEDClient_fetchFriendlyNames();
+  
   TickType_t lastWiFiUpdate = 0;
   TickType_t lastPeriodicSync = 0;
   
@@ -118,6 +121,9 @@ void NetworkTask_taskFunction(void* parameter) {
           Serial.printf("[NET_TASK] Unknown command type: %d\n", cmd.type);
           break;
       }
+      
+      // Provide visual feedback via encoder LED for HTTP commands
+      TwistManager_showHTTPFeedback(success);
       
       uint32_t processingTime = millis() - processingStart;
       NetworkTask_commandsProcessed++;

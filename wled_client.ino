@@ -87,13 +87,30 @@ static inline void WLEDClient_resetBackoff() {
   WLEDClient_lastSuccessMs = millis();
 }
 
+// ───── SAFE HTTP CLEANUP ─────
+static void WLEDClient_safeHTTPCleanup() {
+  Serial.println("[WLED] Safe HTTP cleanup");
+  WLEDClient_http.end();
+  WLEDClient_httpInitialized = false;
+  delay(50); // Small delay for lwIP cleanup
+  yield(); // Allow background processing
+}
+
 // ───── MEMORY OPTIMIZED: Connection management with cleanup ─────
 static bool WLEDClient_initHTTP() {
   uint32_t now = millis();
   
-  // IMPROVED: More aggressive cleanup to prevent socket exhaustion
-  if (WLEDClient_httpInitialized) {
+  // CONSERVATIVE FIX: Only cleanup if really stale to prevent corruption
+  if (WLEDClient_httpInitialized && (now - WLEDClient_lastConnectionTime > 60000)) {
+    Serial.println("[WLED] Connection stale - cleaning up");
     WLEDClient_http.end();
+    WLEDClient_httpInitialized = false;
+    delay(100);
+  }
+  
+  // Skip re-initialization if recently initialized
+  if (WLEDClient_httpInitialized && (now - WLEDClient_lastConnectionTime < 5000)) {
+    return true;
   }
   
   WLEDClient_wifiClient.setTimeout(WLED_HTTP_TIMEOUT_MS);
@@ -128,7 +145,7 @@ bool WLEDClient_testConnection() {
   
   // FIXED: Use GET instead of HEAD - some WLED versions don't support HEAD
   int code = WLEDClient_http.GET();
-  WLEDClient_http.end(); // Always cleanup
+  WLEDClient_http.end(); // Simple cleanup
   
   bool success = (code >= 200 && code < 300);
   
@@ -270,7 +287,7 @@ bool WLEDClient_sendWledCommand(const char* jsonBody) {
 
   if (!WLEDClient_http.begin(WLEDClient_wifiClient, WLEDClient_urlBuffer)) {
     Serial.printf("[HTTP][CMD] begin() failed for %s\n", WLEDClient_urlBuffer);
-    WLEDClient_http.end(); // Always cleanup
+    WLEDClient_http.end(); // Simple cleanup
     WLEDClient_backoff();
     return false;
   }
@@ -321,7 +338,7 @@ bool WLEDClient_fetchWledState(TDoc& doc) {
 
   if (!WLEDClient_http.begin(WLEDClient_wifiClient, WLEDClient_urlBuffer)) {
     Serial.printf("[HTTP][GET] begin() failed for %s\n", WLEDClient_urlBuffer);
-    WLEDClient_http.end(); // Always cleanup
+    WLEDClient_http.end(); // Simple cleanup
     WLEDClient_backoff();
     return false;
   }
@@ -329,7 +346,7 @@ bool WLEDClient_fetchWledState(TDoc& doc) {
   int code = WLEDClient_http.GET();
   if (code != 200) {
     Serial.printf("[HTTP][GET] GET failed: %s (code=%d)\n", WLEDClient_urlBuffer, code);
-    WLEDClient_http.end(); // Always cleanup
+    WLEDClient_http.end(); // Simple cleanup
     WLEDClient_backoff();
     return false;
   }
@@ -370,6 +387,8 @@ bool WLEDClient_fetchWledState(TDoc& doc) {
   
   if (e) {
     Serial.printf("[JSON] parse error: %s\n", e.c_str());
+    // CRITICAL: Clear the document to prevent accidental access to invalid data
+    doc.clear();
     WLEDClient_backoff();
     return false;
   }
@@ -614,7 +633,7 @@ bool WLEDClient_parseWLEDPresets() {
   JsonDocument doc; // MEMORY SAFE: Fixed size for presets
   DeserializationError e = deserializeJson(doc, *stream);
   
-  WLEDClient_http.end(); // Always cleanup
+  WLEDClient_http.end(); // Simple cleanup
 
   if (e) {
     Serial.printf("[JSON] presets parse error: %s\n", e.c_str());
@@ -928,4 +947,65 @@ bool WLEDClient_sendCommand(const char* command) {
   }
   
   return success;
+}
+
+// ───── WLED Instance Friendly Name Fetching ─────
+void WLEDClient_fetchFriendlyNames() {
+  if (!WiFiManager_isConnected()) {
+    Serial.println("[WLED] WiFi not connected - skipping friendly name fetch");
+    return;
+  }
+  
+  Serial.println("[WLED] Fetching friendly names for all instances...");
+  
+  for (uint8_t i = 0; i < WLED_INSTANCE_COUNT; i++) {
+    Serial.printf("[WLED] Fetching name for instance %d: %s\n", i, WLED_INSTANCES[i].ip);
+    
+    // Use local HTTP client to avoid conflicts
+    HTTPClient http;
+    WiFiClient client;
+    http.setTimeout(1000); // Short timeout for name fetching
+    http.setReuse(false);
+    
+    char url[128];
+    snprintf(url, sizeof(url), "http://%s/json/info", WLED_INSTANCES[i].ip);
+    
+    if (http.begin(client, url)) {
+      int httpCode = http.GET();
+      
+      if (httpCode == 200) {
+        String payload = http.getString();
+        JsonDocument doc;
+        
+        if (deserializeJson(doc, payload) == DeserializationError::Ok) {
+          // SAFE: Copy JSON string immediately to avoid dangling pointers
+          String nameStr = doc["name"] | String("");
+          if (nameStr.length() > 0) {
+            // Update the friendly name (note: this modifies the config struct)
+            static char nameBuffers[8][32]; // Static storage for names
+            if (i < 8) { // Safety check
+              strncpy(nameBuffers[i], nameStr.c_str(), 31);
+              nameBuffers[i][31] = '\0';
+              ((WLEDInstance*)&WLED_INSTANCES[i])->friendlyName = nameBuffers[i];
+              Serial.printf("[WLED] Instance %d name: %s\n", i, nameStr.c_str());
+            }
+          } else {
+            Serial.printf("[WLED] No name found for instance %d\n", i);
+          }
+        } else {
+          Serial.printf("[WLED] JSON parse failed for instance %d\n", i);
+        }
+      } else {
+        Serial.printf("[WLED] HTTP %d for instance %d\n", httpCode, i);
+      }
+      
+      http.end();
+    } else {
+      Serial.printf("[WLED] Failed to connect to instance %d\n", i);
+    }
+    
+    delay(100); // Small delay between requests
+  }
+  
+  Serial.println("[WLED] Friendly name fetching complete");
 }

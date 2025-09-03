@@ -1,0 +1,29 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(sed:*)",
+      "Bash(winget install:*)",
+      "Bash(git init:*)",
+      "Bash(gh repo create:*)",
+      "Bash(\"C:\\Program Files\\GitHub CLI\\gh.exe\" --version)",
+      "Bash(\"C:\\Program Files\\GitHub CLI\\gh.exe\" auth status)",
+      "Bash(\"C:\\Program Files\\GitHub CLI\\gh.exe\" auth login)",
+      "Bash(\"C:\\Program Files\\GitHub CLI\\gh.exe\" repo create WLED-Remote --public --description \"Arduino C++ project for ESP32-S3-Touch-2.8 hardware implementing a WLED remote control with 240x320 touchscreen, rotary encoder with RGB LED, and SD card storage\" --source=.)",
+      "Bash(git add:*)",
+      "Bash(arduino-cli compile:*)",
+      "Bash(timeout 90 arduino-cli compile --fqbn esp32:esp32:waveshare_esp32_s3_touch_lcd_28 .)",
+      "Read(c:\\Users\\scott\\Documents\\Arduino\\libraries\\CIRCUITSTATE_CST328_Library\\src/**)",
+      "Bash(timeout 600 arduino-cli compile --fqbn esp32:esp32:waveshare_esp32_s3_touch_lcd_28 .)",
+      "Bash(dir \"C:\\Users\\scott\\Documents\\Arduino\\libraries\\CIRCUITSTATE_CST328_Library\\src\" /B)",
+      "Bash(arduino-cli lib:*)",
+      "Read(C:\\Users\\scott\\Documents\\Arduino\\libraries\\CIRCUITSTATE_CST328_Library/**)",
+      "Bash(arduino-cli:*)",
+      "Bash(xcopy:*)",
+      "Bash(timeout 300 arduino-cli compile:*)",
+      "Bash(/dev/null)",
+      "Bash(grep:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

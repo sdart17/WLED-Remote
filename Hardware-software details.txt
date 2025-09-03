@@ -1,0 +1,4 @@
+ESP32: https://www.waveshare.com/wiki/ESP32-S3-Touch-LCD-2.8
+Encoder: https://www.sparkfun.com/sparkfun-qwiic-twist-rgb-rotary-encoder-breakout.html
+WLED: https://kno.wled.ge/
+Arduino IDE for Windows 11 v2.3.3 (C-style code, not python)

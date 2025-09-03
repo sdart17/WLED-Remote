@@ -1,0 +1,8 @@
+* Generate code updates on the canvas
+* Do not require nudging to continue
+* Target Arduino IDE on Windows v2.3.3 (C-style Arduino code, not python)
+* Avoid adding or removing libraries. Always consult on these decisions first
+* All files in the project are .ino, and should remain that way to benefit from the way the Arduino automatically includes all .ino files in the folder. Do not use .h files
+* Regressions are not acceptable. Do not make functional changes without explicit direction and consultation
+* Your code should compile cleanly the first time, every time. Allocate the time needed to verify the correctness of your code
+* Always generate the fully integrated updated version of each code file impacted by the changes. Unless the change is literally a one-line replacement, do not provide diffs. If the changes are very small and targeted, diffs are acceptable, but list the file and line numbers affected for clarity. 

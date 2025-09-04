@@ -125,6 +125,12 @@ void NetworkTask_taskFunction(void* parameter) {
       // Provide visual feedback via encoder LED for HTTP commands
       TwistManager_showHTTPFeedback(success);
       
+      // PALETTE PREVIEW: Start palette preview for successful preset/quickload commands
+      if (success && (cmd.type == NET_CMD_PRESET || cmd.type == NET_CMD_QUICKLOAD || cmd.type == NET_CMD_PRESET_CYCLE)) {
+        // Schedule palette preview to start after HTTP feedback completes (2 second delay)
+        TwistManager_schedulePalettePreview(2100); // Start 100ms after feedback ends
+      }
+      
       uint32_t processingTime = millis() - processingStart;
       NetworkTask_commandsProcessed++;
       

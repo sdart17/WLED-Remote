@@ -363,6 +363,7 @@ bool TwistManager_isInPowerSavingMode();
 void TwistManager_fetchWLEDPalette();
 void TwistManager_showHTTPFeedback(bool success);
 void TwistManager_updateHTTPFeedback();
+void TwistManager_schedulePalettePreview(uint32_t delayMs);
 
 // UI Manager - ENHANCED
 void UIManager_init();

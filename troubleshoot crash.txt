@@ -230,3 +230,40 @@ if (!g.valid) { /* render placeholders */ } else { /* use g.name.c(), g.ver.c() 
 
 
 If you paste the addr2line output (or the snippet where you populate/store JSON-derived strings), I’ll pinpoint the exact line and give you a targeted patch.
+
+21:27:17.433 -> [HB] up=80s loops/s=247 max_loop=10348μs WiFi=up(-60dBm) page=1/4 screen=off QL=7,15,19 twist=sleep,bri=128 heap=233472 cache=100% queue=0 freq=240MHz core=dual
+21:27:18.404 -> [TOUCH] Extended idle timeout - scheduling gentle reinit
+21:27:18.404 -> [TOUCH] I2C health: 4/5 errors, bad reads: 0
+21:27:18.859 -> [PWR] V=4137mV (93%), USB=Y, VChg=N, %Chg=N, Ext=3/3, Bat=0/2 -> EXTERNAL
+21:27:20.406 -> [TOUCH] Extended idle timeout - scheduling gentle reinit
+21:27:20.406 -> [TOUCH] I2C health: 4/5 errors, bad reads: 0
+21:27:20.500 -> [PWR] V=4122mV (92%), USB=Y, VChg=N, %Chg=N, Ext=3/3, Bat=0/2 -> EXTERNAL
+21:27:22.137 -> [PWR] V=4137mV (93%), USB=Y, VChg=N, %Chg=N, Ext=3/3, Bat=0/2 -> EXTERNAL
+21:27:22.414 -> [TOUCH] Extended idle timeout - scheduling gentle reinit
+21:27:22.414 -> [TOUCH] I2C health: 4/5 errors, bad reads: 0
+21:27:23.726 -> [PWR] V=4131mV (93%), USB=Y, VChg=N, %Chg=N, Ext=3/3, Bat=0/2 -> EXTERNAL
+21:27:24.406 -> [TOUCH] Extended idle timeout - scheduling gentle reinit
+21:27:24.406 -> [TOUCH] I2C health: 4/5 errors, bad reads: 0
+21:27:25.342 -> [PWR] V=4137mV (92%), USB=Y, VChg=N, %Chg=N, Ext=3/3, Bat=0/2 -> EXTERNAL
+21:27:26.391 -> [TOUCH] Extended idle timeout - scheduling gentle reinit
+21:27:26.391 -> [TOUCH] I2C health: 4/5 errors, bad reads: 0
+21:27:26.663 -> [JSON] parse error: InvalidInput
+21:27:27.145 -> Guru Meditation Error: Core  0 panic'ed (LoadProhibited). Exception was unhandled.
+21:27:27.145 -> 
+21:27:27.145 -> Core  0 register dump:
+21:27:27.145 -> PC      : 0x4200fa08  PS      : 0x00060a30  A0      : 0x820c1550  A1      : 0x3fcb2040  
+21:27:27.145 -> A2      : 0x00000000  A3      : 0x3fcb207f  A4      : 0x00000001  A5      : 0x00000000  
+21:27:27.145 -> A6      : 0x0000003a  A7      : 0x3fc9e834  A8      : 0x00000000  A9      : 0x3fcb2020  
+21:27:27.145 -> A10     : 0x00000000  A11     : 0x3fcb207f  A12     : 0x00000001  A13     : 0x5df00000  
+21:27:27.145 -> A14     : 0x3fcb202c  A15     : 0x3fcba390  SAR     : 0x0000000a  EXCCAUSE: 0x0000001c  
+21:27:27.145 -> EXCVADDR: 0x00000014  LBEG    : 0x40056f08  LEND    : 0x40056f12  LCOUNT  : 0x00000000  
+21:27:27.145 -> 
+21:27:27.145 -> 
+21:27:27.145 -> Backtrace: 0x4200fa05:0x3fcb2040 0x420c154d:0x3fcb2070 0x42019a52:0x3fcb20a0 0x42019aed:0x3fcb20c0 0x42015006:0x3fcb20e0 0x42015612:0x3fcb2180 0x42015717:0x3fcb21e0 0x4200bec5:0x3fcb2200 0x4200c86e:0x3fcb2240 0x4200cd86:0x3fcb22c0 0x4200d3e0:0x3fcb2300 0x4037fb25:0x3fcb2350
+21:27:27.145 -> 
+21:27:27.145 -> 
+21:27:27.145 -> 
+21:27:27.145 -> 
+21:27:27.145 -> ELF file SHA256: cc155d75c
+21:27:27.145 -> 
+21:27:27.145 -> Rebooting...

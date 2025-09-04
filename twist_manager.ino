@@ -150,6 +150,15 @@ static bool TwistManager_feedbackSuccess = false;
 static uint8_t TwistManager_feedbackFlashCount = 0;
 static uint32_t TwistManager_lastFlashTime = 0;
 
+// Palette Preview variables
+static bool TwistManager_palettePreviewActive = false;
+static uint32_t TwistManager_palettePreviewStartTime = 0;
+static uint8_t TwistManager_palettePreviewCurrentIndex = 0;
+static uint32_t TwistManager_palettePreviewLastColorTime = 0;
+static bool TwistManager_palettePreviewScheduled = false;
+static uint32_t TwistManager_palettePreviewScheduledTime = 0;
+static bool TwistManager_palettePreviewPendingStart = false;
+
 #if TWIST_ENABLE_JSON_LIVE
 static uint32_t TwistManager_lastLiveSample = 0;
 #endif
@@ -216,6 +225,12 @@ void TwistManager_update() {
   
   // Update HTTP command feedback
   TwistManager_updateHTTPFeedback();
+  
+  // Check for scheduled palette preview
+  TwistManager_checkScheduledPreview();
+  
+  // Update palette preview if active
+  TwistManager_updatePalettePreview();
   
   // Periodic palette refresh to keep encoder LED colors in sync
   TwistManager_periodicPaletteRefresh();
@@ -830,5 +845,98 @@ void TwistManager_updateHTTPFeedback() {
   } else {
     // Second 1 second: pause (LED off)
     TwistManager_twist.setColor(0, 0, 0);
+  }
+}
+
+// ───── PALETTE PREVIEW FEATURE ─────
+// Shows a preview of the new palette colors after successful preset change
+void TwistManager_startPalettePreview() {
+  if (!TwistManager_available || TwistManager_paletteColorCount < 2) return;
+  
+  // Don't start preview if already active or if feedback is active
+  if (TwistManager_palettePreviewActive || TwistManager_feedbackActive) return;
+  
+  Serial.printf("[TWIST] Starting palette preview with %d colors\n", TwistManager_paletteColorCount);
+  
+  TwistManager_palettePreviewActive = true;
+  TwistManager_palettePreviewStartTime = millis();
+  TwistManager_palettePreviewCurrentIndex = 0;
+  TwistManager_palettePreviewLastColorTime = millis();
+  
+  // Start with first color
+  if (TwistManager_paletteColorCount > 0) {
+    TwistRGB firstColor = TwistManager_paletteColors[0];
+    TwistManager_twist.setColor(firstColor.r, firstColor.g, firstColor.b);
+    TwistManager_currentDisplayColor = firstColor;
+  }
+}
+
+void TwistManager_updatePalettePreview() {
+  if (!TwistManager_palettePreviewActive || !TwistManager_available) return;
+  
+  uint32_t now = millis();
+  uint32_t elapsed = now - TwistManager_palettePreviewStartTime;
+  uint32_t colorElapsed = now - TwistManager_palettePreviewLastColorTime;
+  
+  // Each color shows for 1 second with crossfading
+  const uint32_t COLOR_DISPLAY_TIME = 1000; // 1 second per color
+  const uint32_t CROSSFADE_TIME = 200; // 200ms crossfade between colors
+  
+  // Total preview time = (number of colors * 1 second) + extra time for final fade
+  uint32_t totalPreviewTime = TwistManager_paletteColorCount * COLOR_DISPLAY_TIME + 500;
+  
+  if (elapsed >= totalPreviewTime) {
+    // Preview complete - restore normal operation
+    TwistManager_palettePreviewActive = false;
+    Serial.println("[TWIST] Palette preview complete");
+    
+    // Resume normal palette cycling
+    TwistManager_usePaletteCycling = true;
+    TwistManager_cycleStartTime = millis(); // Reset cycle timing
+    return;
+  }
+  
+  // Handle color transitions
+  if (colorElapsed >= COLOR_DISPLAY_TIME && TwistManager_palettePreviewCurrentIndex < TwistManager_paletteColorCount - 1) {
+    // Move to next color
+    TwistManager_palettePreviewCurrentIndex++;
+    TwistManager_palettePreviewLastColorTime = now;
+    
+    if (TwistManager_palettePreviewCurrentIndex < TwistManager_paletteColorCount) {
+      TwistRGB nextColor = TwistManager_paletteColors[TwistManager_palettePreviewCurrentIndex];
+      Serial.printf("[TWIST] Preview color %d: RGB(%d,%d,%d)\n", 
+                    TwistManager_palettePreviewCurrentIndex, nextColor.r, nextColor.g, nextColor.b);
+      
+      // Set color directly (crossfading will be handled by normal update logic)
+      TwistManager_twist.setColor(nextColor.r, nextColor.g, nextColor.b);
+      TwistManager_currentDisplayColor = nextColor;
+    }
+  }
+}
+
+// ───── PALETTE PREVIEW SCHEDULING ─────
+void TwistManager_schedulePalettePreview(uint32_t delayMs) {
+  if (!TwistManager_available) return;
+  
+  Serial.printf("[TWIST] Scheduling palette preview to start in %dms\n", delayMs);
+  TwistManager_palettePreviewScheduled = true;
+  TwistManager_palettePreviewScheduledTime = millis() + delayMs;
+}
+
+void TwistManager_checkScheduledPreview() {
+  if (!TwistManager_palettePreviewScheduled || !TwistManager_available) return;
+  
+  uint32_t now = millis();
+  if (now >= TwistManager_palettePreviewScheduledTime) {
+    TwistManager_palettePreviewScheduled = false;
+    
+    // Only start if feedback is not active and we're not already previewing
+    if (!TwistManager_feedbackActive && !TwistManager_palettePreviewActive) {
+      // Refresh palette from WLED first, then start preview
+      TwistManager_fetchWLEDPalette();
+      TwistManager_startPalettePreview();
+    } else {
+      Serial.println("[TWIST] Skipping scheduled preview - feedback or preview already active");
+    }
   }
 }

@@ -383,12 +383,13 @@ void IPower_enterDeepSleep() {
   // Save critical state before sleep
   IPower_context.currentState = IPOWER_DEEP_SLEEP;
   
-  // Enter deep sleep
+  // Enter deep sleep using safe power manager function
   Serial.println("[IPOWER] Entering sleep now...");
   Serial.flush();
   delay(100); // Ensure serial output completes
   
-  esp_deep_sleep_start();
+  // Use PowerManager's safe sleep function to avoid power hold issues
+  PowerManager_enterDeepSleep();
 }
 
 void IPower_handleWakeup() {

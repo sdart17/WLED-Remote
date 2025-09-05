@@ -22,7 +22,7 @@ void PowerManager_powerHoldInit() {
 
 void PowerManager_powerHoldReleaseAndOff() {
   if (PowerManager_batHoldAvailable) {
-    Serial.println("[PWR] Releasing BAT_Control LOW (shutdown)...");
+    Serial.println("[PWR] Manual shutdown requested - releasing BAT_Control LOW...");
     digitalWrite(PIN_BAT_HOLD, LOW);
     delay(1500);
   }
@@ -77,6 +77,19 @@ void PowerManager_update() {
 
 void PowerManager_shutdown() {
   PowerManager_powerHoldReleaseAndOff();
+}
+
+// Safe sleep function - doesn't release power hold pin
+void PowerManager_enterDeepSleep() {
+  Serial.println("[PWR] Entering deep sleep (keeping power hold)...");
+  
+  // Configure wake sources
+  esp_sleep_enable_ext0_wakeup((gpio_num_t)PIN_TP_INT, 0); // Wake on touch interrupt
+  esp_sleep_enable_timer_wakeup(3600000000ULL); // 1 hour backup timer
+  
+  Serial.flush();
+  delay(100);
+  esp_deep_sleep_start();
 }
 
 void PowerManager_restart() {

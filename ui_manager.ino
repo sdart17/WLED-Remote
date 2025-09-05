@@ -41,14 +41,22 @@ static int UIManager_pressedButtonIndex = -1;
 static uint32_t UIManager_buttonPressTime = 0;
 static const uint32_t BUTTON_PRESS_FEEDBACK_MS = 150;
 
-// Page 0 buttons
+// ENHANCED: Quick Launch Actions - Expanded to 6 slots  
+#define ACTION_QUICK_LAUNCH_1    201
+#define ACTION_QUICK_LAUNCH_2    202
+#define ACTION_QUICK_LAUNCH_3    203
+#define ACTION_QUICK_LAUNCH_4    204  // Shuffle (QL4)
+#define ACTION_QUICK_LAUNCH_5    205  // Bright White (QL5)
+#define ACTION_QUICK_LAUNCH_6    206  // Music (QL6)
+
+// Page 0 buttons - ENHANCED: All 6 buttons now use quick launch mappings  
 static IconBtn UIManager_page0Buttons[] = {
-  { 30,  40, 80, 80, "/shuffle-80x80-wb-border.bmp", "/shuffle-80x80-bw-border.bmp", "SHFFL", 2},
-  { 30, 130, 80, 80, "/bright-80x80-wb-border.bmp",  "/bright-80x80-bw-border.bmp",  "BRGHT", 1},
-  { 30, 220, 80, 80, "/music-80x80-wb-border.bmp",   "/music-80x80-bw-border.bmp",   "MUSIC", 3},
-  {130,  40, 80, 80, "/one-80x80-wb-border.bmp",     "/one-80x80-bw-border.bmp",     "ONE", 101},
-  {130, 130, 80, 80, "/two-80x80-wb-border.bmp",     "/two-80x80-bw-border.bmp",     "TWO", 102},
-  {130, 220, 80, 80, "/three-80x80-wb-border.bmp",   "/three-80x80-bw-border.bmp",   "THREE", 103}
+  { 30,  40, 80, 80, "/shuffle-80x80-wb-border.bmp", "/shuffle-80x80-bw-border.bmp", "SHFFL", ACTION_QUICK_LAUNCH_4},
+  { 30, 130, 80, 80, "/bright-80x80-wb-border.bmp",  "/bright-80x80-bw-border.bmp",  "BRGHT", ACTION_QUICK_LAUNCH_5},
+  { 30, 220, 80, 80, "/music-80x80-wb-border.bmp",   "/music-80x80-bw-border.bmp",   "MUSIC", ACTION_QUICK_LAUNCH_6},
+  {130,  40, 80, 80, "/one-80x80-wb-border.bmp",     "/one-80x80-bw-border.bmp",     "ONE", ACTION_QUICK_LAUNCH_1},
+  {130, 130, 80, 80, "/two-80x80-wb-border.bmp",     "/two-80x80-bw-border.bmp",     "TWO", ACTION_QUICK_LAUNCH_2},
+  {130, 220, 80, 80, "/three-80x80-wb-border.bmp",   "/three-80x80-bw-border.bmp",   "THREE", ACTION_QUICK_LAUNCH_3}
 };
 static const int UIManager_PAGE0_BTN_COUNT = 6;
 
@@ -240,6 +248,9 @@ bool UIManager_inSliderActiveLane(int16_t x, int16_t y) {
 
 // OPTIMIZED: Smart page painting with minimal redraws
 void UIManager_paintPage() {
+  // CRITICAL FIX: Update activity on every paint to prevent timeout during active UI use
+  DisplayManager_updateActivity();
+  
   Serial.printf("[UI] paintPage() start - screen on=%s\n", DisplayManager_isScreenOn() ? "Y" : "N");
   
   if (!DisplayManager_isScreenOn()) {
@@ -384,19 +395,45 @@ void UIManager_handlePage0Touch(int16_t x, int16_t y) {
   
   for (int i = 0; i < UIManager_PAGE0_BTN_COUNT; i++) {
     if (UIManager_hitTest(UIManager_page0Buttons[i], x, y)) {
+      // CRITICAL FIX: Update activity on button press to prevent timeout
+      DisplayManager_updateActivity();
+      
       // OPTIMIZED: Immediate visual feedback - don't wait for network
       UIManager_drawIconButton(UIManager_page0Buttons[i], true); 
       UIManager_pressedButtonIndex = i;
       UIManager_buttonPressTime = millis();
       
-      // PHASE 2B: Use network task for non-blocking execution
+      // ENHANCED: Use fixed quick launch presets for consistent operation
       uint8_t a = UIManager_page0Buttons[i].action;
-      if (a >= 101 && a <= 103) {
-        // Queue quick load command via network task
-        NetworkTask_queueQuickLoad(a - 100);
-      } else {
-        // Queue preset command via network task
-        NetworkTask_queuePreset(a);
+      bool queued = false;
+      
+      switch (a) {
+        case ACTION_QUICK_LAUNCH_1:
+          queued = NetworkTask_queueFixedQuickLaunch1();
+          break;
+        case ACTION_QUICK_LAUNCH_2:
+          queued = NetworkTask_queueFixedQuickLaunch2();
+          break;
+        case ACTION_QUICK_LAUNCH_3:
+          queued = NetworkTask_queueFixedQuickLaunch3();
+          break;
+        case ACTION_QUICK_LAUNCH_4:
+          queued = NetworkTask_queueFixedQuickLaunch4();
+          break;
+        case ACTION_QUICK_LAUNCH_5:
+          queued = NetworkTask_queueFixedQuickLaunch5();
+          break;
+        case ACTION_QUICK_LAUNCH_6:
+          queued = NetworkTask_queueFixedQuickLaunch6();
+          break;
+        default:
+          // Fallback for any other actions
+          queued = NetworkTask_queuePreset(a);
+          break;
+      }
+      
+      if (!queued) {
+        Serial.printf("[UI] Failed to queue fixed preset action %u\n", a);
       }
       
       Serial.printf("[UI] Queued action %u (non-blocking)\n", a);
@@ -414,6 +451,9 @@ void UIManager_handlePage1Touch(int16_t x, int16_t y) {
   
   for (int i = 0; i < UIManager_PAGE1_BTN_COUNT; i++) {
     if (UIManager_hitTest(UIManager_page1Buttons[i], x, y)) {
+      // CRITICAL FIX: Update activity on button press to prevent timeout
+      DisplayManager_updateActivity();
+      
       // OPTIMIZED: Immediate visual feedback
       UIManager_drawIconButton(UIManager_page1Buttons[i], true); 
       UIManager_pressedButtonIndex = i + 100; // Offset to avoid conflicts
@@ -585,7 +625,12 @@ void UIManager_drawWLEDSelectionPage() {
   // Draw current selection indicator
   tft.setTextSize(1);
   tft.setCursor(10, 45);
-  tft.printf("Current: %s", WLED_INSTANCES[CURRENT_WLED_INSTANCE].friendlyName);
+  if (CURRENT_WLED_INSTANCE < WLED_INSTANCE_COUNT) {
+    const char* currentName = WLED_INSTANCES[CURRENT_WLED_INSTANCE].friendlyName;
+    tft.printf("Current: %s", currentName ? currentName : WLED_INSTANCES[CURRENT_WLED_INSTANCE].ip);
+  } else {
+    tft.print("Current: Invalid");
+  }
   
   // Draw instance list - max 8 instances to fit on screen
   uint8_t maxInstances = min(WLED_INSTANCE_COUNT, (uint8_t)8);
@@ -605,11 +650,19 @@ void UIManager_drawWLEDSelectionPage() {
     tft.setTextColor(fgColor, bgColor);
     tft.setCursor(10, y);
     
+    // SAFETY: Check array bounds before accessing
+    if (i >= WLED_INSTANCE_COUNT) {
+      tft.printf("%d: Invalid", i + 1);
+      continue;
+    }
+    
     // Show friendly name if available, fallback to IP
     const char* displayName = WLED_INSTANCES[i].friendlyName;
+    const char* ipAddress = WLED_INSTANCES[i].ip;
+    
     if (!displayName || strlen(displayName) == 0 || strcmp(displayName, "Primary WLED") == 0 || strcmp(displayName, "Secondary WLED") == 0) {
       // Show IP if no custom friendly name retrieved yet
-      tft.printf("%d: %s", i + 1, WLED_INSTANCES[i].ip);
+      tft.printf("%d: %s", i + 1, ipAddress ? ipAddress : "Unknown");
     } else {
       tft.printf("%d: %s", i + 1, displayName);
     }
@@ -618,7 +671,7 @@ void UIManager_drawWLEDSelectionPage() {
     if (displayName && strlen(displayName) > 0 && strcmp(displayName, "Primary WLED") != 0 && strcmp(displayName, "Secondary WLED") != 0) {
       tft.setCursor(15, y + 10);
       tft.setTextSize(1);
-      tft.printf("  (%s)", WLED_INSTANCES[i].ip);
+      tft.printf("  (%s)", ipAddress ? ipAddress : "Unknown");
     }
   }
   
@@ -639,11 +692,26 @@ void UIManager_handleWLEDSelectionTouch(int16_t x, int16_t y) {
     
     // Check if touch is within this item's bounds
     if (x >= 5 && x <= 235 && y >= (itemY - 2) && y <= (itemY + 18)) {
+      // SAFETY: Check array bounds before accessing
+      if (i >= WLED_INSTANCE_COUNT) {
+        Serial.printf("[UI] Invalid WLED instance index: %d\n", i);
+        break;
+      }
+      
       if (i != CURRENT_WLED_INSTANCE) {
-        // Switch to selected instance
-        CURRENT_WLED_INSTANCE = i;
-        Serial.printf("[UI] Switched to WLED instance %d: %s (%s)\n", 
-                      i, WLED_INSTANCES[i].friendlyName, WLED_INSTANCES[i].ip);
+        // ENHANCED: Switch to selected instance and save persistently
+        const char* friendlyName = WLED_INSTANCES[i].friendlyName ? WLED_INSTANCES[i].friendlyName : "Unknown";
+        const char* ipAddress = WLED_INSTANCES[i].ip ? WLED_INSTANCES[i].ip : "Unknown";
+        
+        if (PersistenceManager_onWLEDInstanceChanged(i)) {
+          Serial.printf("[UI] Switched to WLED instance %d: %s (%s) - SAVED\n", 
+                        i, friendlyName, ipAddress);
+        } else {
+          // Fallback if persistence fails
+          CURRENT_WLED_INSTANCE = i;
+          Serial.printf("[UI] Switched to WLED instance %d: %s (%s) - NOT SAVED\n", 
+                        i, friendlyName, ipAddress);
+        }
         
         // Force UI repaint to show new selection
         UIManager_needsFullRepaint = true;

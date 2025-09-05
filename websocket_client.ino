@@ -75,9 +75,17 @@ void WebSocketClient_onEvent(WStype_t type, uint8_t* payload, size_t length) {
         DeserializationError error = deserializeJson(doc, (char*)payload);
         
         if (!error) {
-          WebSocketClient_handleStateUpdate(doc);
+          // CRITICAL FIX: Additional validation before processing
+          if (!doc.isNull() && doc.size() > 0) {
+            WebSocketClient_handleStateUpdate(doc);
+          } else {
+            Serial.println("[WS] Document is null or empty after successful parse");
+          }
         } else {
           Serial.printf("[WS] JSON parse error: %s\n", error.c_str());
+          // CRITICAL FIX: Ensure document is cleared on error
+          doc.clear();
+          doc = JsonDocument(); // Reset to completely empty state
         }
       }
       break;
@@ -114,16 +122,22 @@ void WebSocketClient_onEvent(WStype_t type, uint8_t* payload, size_t length) {
 
 // ───── State Update Handler ─────
 void WebSocketClient_handleStateUpdate(JsonDocument& doc) {
+  // CRITICAL FIX: Comprehensive validation before accessing document
+  if (doc.isNull() || doc.size() == 0) {
+    Serial.println("[WS] Invalid document passed to state handler");
+    return;
+  }
+  
   // Handle WLED state updates received via WebSocket
-  if (doc.containsKey("state")) {
+  if (doc.containsKey("state") && doc["state"].is<JsonObject>()) {
     JsonObject state = doc["state"];
     
-    if (state.containsKey("on")) {
+    if (state.containsKey("on") && state["on"].is<bool>()) {
       bool powerState = state["on"];
       Serial.printf("[WS] Power state update: %s\n", powerState ? "ON" : "OFF");
     }
     
-    if (state.containsKey("bri")) {
+    if (state.containsKey("bri") && state["bri"].is<int>()) {
       int brightness = state["bri"];
       Serial.printf("[WS] Brightness update: %d\n", brightness);
       

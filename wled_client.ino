@@ -260,7 +260,11 @@ static void WLEDClient_processQueue() {
   }
 }
 
-static uint8_t WLEDClient_quickLoadPresets[3] = {1, 2, 3};
+// CRITICAL FIX: Per-instance quick loads mapping - EXPANDED to 6 slots
+static uint8_t WLEDClient_quickLoadPresets[8][6] = {
+  {1, 2, 3, 4, 5, 6}, {1, 2, 3, 4, 5, 6}, {1, 2, 3, 4, 5, 6}, {1, 2, 3, 4, 5, 6},  // Instances 0-3
+  {1, 2, 3, 4, 5, 6}, {1, 2, 3, 4, 5, 6}, {1, 2, 3, 4, 5, 6}, {1, 2, 3, 4, 5, 6}   // Instances 4-7
+};
 static bool    WLEDClient_quickLoadsEverLoaded = false;
 
 // ─────────────────────────────────────────────────────────────
@@ -287,7 +291,6 @@ bool WLEDClient_sendWledCommand(const char* jsonBody) {
 
   if (!WLEDClient_http.begin(WLEDClient_wifiClient, WLEDClient_urlBuffer)) {
     Serial.printf("[HTTP][CMD] begin() failed for %s\n", WLEDClient_urlBuffer);
-    WLEDClient_http.end(); // Simple cleanup
     WLEDClient_backoff();
     return false;
   }
@@ -338,7 +341,6 @@ bool WLEDClient_fetchWledState(TDoc& doc) {
 
   if (!WLEDClient_http.begin(WLEDClient_wifiClient, WLEDClient_urlBuffer)) {
     Serial.printf("[HTTP][GET] begin() failed for %s\n", WLEDClient_urlBuffer);
-    WLEDClient_http.end(); // Simple cleanup
     WLEDClient_backoff();
     return false;
   }
@@ -346,7 +348,7 @@ bool WLEDClient_fetchWledState(TDoc& doc) {
   int code = WLEDClient_http.GET();
   if (code != 200) {
     Serial.printf("[HTTP][GET] GET failed: %s (code=%d)\n", WLEDClient_urlBuffer, code);
-    WLEDClient_http.end(); // Simple cleanup
+    WLEDClient_http.end();
     WLEDClient_backoff();
     return false;
   }
@@ -387,7 +389,17 @@ bool WLEDClient_fetchWledState(TDoc& doc) {
   
   if (e) {
     Serial.printf("[JSON] parse error: %s\n", e.c_str());
-    // CRITICAL: Clear the document to prevent accidental access to invalid data
+    // CRITICAL FIX: Completely invalidate the document and add poisoning
+    doc.clear();
+    doc = JsonDocument(); // Reset to completely empty state
+    Serial.printf("[WLED] JSON parse failed - document invalidated\n");
+    WLEDClient_backoff();
+    return false;
+  }
+  
+  // CRITICAL FIX: Additional validation - ensure document is not empty/null
+  if (doc.isNull() || doc.size() == 0) {
+    Serial.println("[JSON] Document is null or empty after successful parse");
     doc.clear();
     WLEDClient_backoff();
     return false;
@@ -473,7 +485,6 @@ bool WLEDClient_sendPresetCycle(bool next) {
 
   if (!WLEDClient_http.begin(WLEDClient_wifiClient, WLEDClient_urlBuffer)) {
     Serial.printf("[HTTP][PCY] begin() failed: %s\n", WLEDClient_urlBuffer);
-    WLEDClient_http.end();
     WLEDClient_backoff();
     return false;
   }
@@ -509,7 +520,6 @@ bool WLEDClient_sendPaletteCycle(bool next) {
 
   if (!WLEDClient_http.begin(WLEDClient_wifiClient, WLEDClient_urlBuffer)) {
     Serial.printf("[HTTP][PAL] begin() failed: %s\n", WLEDClient_urlBuffer);
-    WLEDClient_http.end();
     WLEDClient_backoff();
     return false;
   }
@@ -545,10 +555,14 @@ int WLEDClient_fetchBrightness() {
   JsonDocument doc;
   if (!WLEDClient_fetchWledState(doc)) return WLEDClient_cachedBrightness >= 0 ? WLEDClient_cachedBrightness : -1;
   
-  if (doc["state"]["bri"].is<int>()) {
+  // CRITICAL FIX: Add comprehensive validation before accessing JSON fields
+  if (doc["state"].is<JsonObject>() && doc["state"]["bri"].is<int>()) {
     WLEDClient_cachedBrightness = (int)doc["state"]["bri"];
     WLEDClient_lastBrightnessUpdate = now;
+    Serial.printf("[WLED] Brightness cached: %d\n", WLEDClient_cachedBrightness);
     return WLEDClient_cachedBrightness;
+  } else {
+    Serial.println("[WLED] Invalid brightness JSON structure - using cached value");
   }
   
   Serial.println("[WLED] Brightness not found in state");
@@ -637,18 +651,38 @@ bool WLEDClient_parseWLEDPresets() {
 
   if (e) {
     Serial.printf("[JSON] presets parse error: %s\n", e.c_str());
+    // CRITICAL FIX: Completely invalidate the document and add poisoning  
+    doc.clear();
+    doc = JsonDocument(); // Reset to completely empty state
+    Serial.printf("[WLED] Presets JSON parse failed - document invalidated\n");
+    WLEDClient_backoff();
+    return false;
+  }
+  
+  // CRITICAL FIX: Additional validation - ensure document is not empty/null
+  if (doc.isNull() || doc.size() == 0) {
+    Serial.println("[JSON] Presets document is null or empty after successful parse");
+    doc.clear();
+    WLEDClient_backoff();
+    return false;
+  }
+  
+  // CRITICAL FIX: Ensure the document is actually a JSON object before processing
+  if (!doc.is<JsonObject>()) {
+    Serial.println("[JSON] Presets document is not a valid JSON object");
+    doc.clear();
     WLEDClient_backoff();
     return false;
   }
 
   bool any = false;
-  uint8_t tmpQL[3] = {0, 0, 0};
+  uint8_t tmpQL[6] = {0, 0, 0, 0, 0, 0};  // EXPANDED to 6 slots
 
   auto assignQl = [&](int q, uint16_t id) {
-    if (q >= 1 && q <= 3 && tmpQL[q-1] == 0) { tmpQL[q-1] = (uint8_t)id; any = true; }
+    if (q >= 1 && q <= 6 && tmpQL[q-1] == 0) { tmpQL[q-1] = (uint8_t)id; any = true; }
   };
   auto assignFirstFree = [&](uint16_t id) {
-    for (int s = 0; s < 3; s++) if (tmpQL[s] == 0) { tmpQL[s] = (uint8_t)id; any = true; return; }
+    for (int s = 0; s < 6; s++) if (tmpQL[s] == 0) { tmpQL[s] = (uint8_t)id; any = true; return; }
   };
 
   // MEMORY SAFE: Process presets without String operations
@@ -670,31 +704,48 @@ bool WLEDClient_parseWLEDPresets() {
     } else if (ql.is<bool>()) {
       if (ql.as<bool>()) assignFirstFree(id);
     } else if (ql.is<const char*>()) {
-      // Simple parsing without String allocations
+      // Simple parsing without String allocations - EXPANDED to support QL 4-6
       const char* str = ql.as<const char*>();
       if (strcmp(str, "true") == 0) assignFirstFree(id);
       else if (strcmp(str, "1") == 0) assignQl(1, id);
       else if (strcmp(str, "2") == 0) assignQl(2, id);
       else if (strcmp(str, "3") == 0) assignQl(3, id);
+      else if (strcmp(str, "4") == 0) assignQl(4, id);
+      else if (strcmp(str, "5") == 0) assignQl(5, id);
+      else if (strcmp(str, "6") == 0) assignQl(6, id);
     }
   }
 
   if (any) {
-    for (int i = 0; i < 3; i++) if (tmpQL[i] == 0) tmpQL[i] = i + 1; // backfill
-    memcpy(WLEDClient_quickLoadPresets, tmpQL, 3);
+    for (int i = 0; i < 6; i++) if (tmpQL[i] == 0) tmpQL[i] = i + 1; // backfill with defaults 1-6
+    // CRITICAL FIX: Update quick loads for current WLED instance
+    uint8_t instance = CURRENT_WLED_INSTANCE;
+    if (instance >= 8) instance = 0; // Safety fallback
+    
+    memcpy(WLEDClient_quickLoadPresets[instance], tmpQL, 6);
     WLEDClient_quickLoadsEverLoaded = true;
-    Serial.printf("[WLED] QuickLoads mapped: QL1=%u QL2=%u QL3=%u\n",
-                  WLEDClient_quickLoadPresets[0],
-                  WLEDClient_quickLoadPresets[1],
-                  WLEDClient_quickLoadPresets[2]);
+    Serial.printf("[WLED] QuickLoads mapped for instance %u: QL1=%u QL2=%u QL3=%u QL4=%u QL5=%u QL6=%u\n",
+                  instance,
+                  WLEDClient_quickLoadPresets[instance][0],
+                  WLEDClient_quickLoadPresets[instance][1],
+                  WLEDClient_quickLoadPresets[instance][2],
+                  WLEDClient_quickLoadPresets[instance][3],
+                  WLEDClient_quickLoadPresets[instance][4],
+                  WLEDClient_quickLoadPresets[instance][5]);
     WLEDClient_resetBackoff();
     return true;
   } else {
     if (!WLEDClient_quickLoadsEverLoaded) {
-      WLEDClient_quickLoadPresets[0] = 1;
-      WLEDClient_quickLoadPresets[1] = 2;
-      WLEDClient_quickLoadPresets[2] = 3;
-      Serial.println("[WLED] No QL in presets; keeping defaults 1/2/3");
+      uint8_t instance = CURRENT_WLED_INSTANCE;
+      if (instance >= 8) instance = 0; // Safety fallback
+      
+      WLEDClient_quickLoadPresets[instance][0] = 1;
+      WLEDClient_quickLoadPresets[instance][1] = 2;
+      WLEDClient_quickLoadPresets[instance][2] = 3;
+      WLEDClient_quickLoadPresets[instance][3] = 4;
+      WLEDClient_quickLoadPresets[instance][4] = 5;
+      WLEDClient_quickLoadPresets[instance][5] = 6;
+      Serial.printf("[WLED] No QL in presets for instance %u; keeping defaults 1/2/3/4/5/6\n", instance);
     }
     WLEDClient_resetBackoff();
     return false;
@@ -706,19 +757,23 @@ bool WLEDClient_initQuickLoads() {
 }
 
 uint8_t WLEDClient_getQuickLoadPreset(uint8_t index) {
-  if (index < 3) return WLEDClient_quickLoadPresets[index];
-  return 0;
+  if (index >= 6) return 0;  // EXPANDED to support 0-5
+  
+  uint8_t instance = CURRENT_WLED_INSTANCE;
+  if (instance >= 8) instance = 0; // Safety fallback
+  
+  return WLEDClient_quickLoadPresets[instance][index];
 }
 
 bool WLEDClient_sendQuickLoad(unsigned char slot) {
-  // Normalize slot to 0..2
-  if (slot >= 1 && slot <= 3) slot = (unsigned char)(slot - 1);
-  if (slot > 2) return false;
+  // Normalize slot to 0..5 (support slots 1-6)
+  if (slot >= 1 && slot <= 6) slot = (unsigned char)(slot - 1);
+  if (slot > 5) return false;
 
   uint8_t presetId = WLEDClient_getQuickLoadPreset(slot);
   if (presetId == 0) {
     Serial.printf("[WLED] QL slot %u not mapped - using default\n", (unsigned)slot);
-    presetId = slot + 1; // Default mapping: QL1=1, QL2=2, QL3=3
+    presetId = slot + 1; // Default mapping: QL1=1, QL2=2, ..., QL6=6
   }
 
   return WLEDClient_sendPreset(presetId);
@@ -797,8 +852,16 @@ bool WLEDClient_getPowerState() {
   if (now - WLEDClient_lastPowerCheck > 2000) {
     JsonDocument doc; // MEMORY SAFE: Fixed size
     if (WLEDClient_fetchWledState(doc)) {
-      WLEDClient_lastKnownPowerState = doc["state"]["on"].as<bool>();
-      WLEDClient_lastPowerCheck = now;
+      // CRITICAL FIX: Add comprehensive validation before accessing JSON fields
+      if (doc["state"].is<JsonObject>() && doc["state"]["on"].is<bool>()) {
+        WLEDClient_lastKnownPowerState = doc["state"]["on"].as<bool>();
+        WLEDClient_lastPowerCheck = now;
+        Serial.printf("[WLED] Power state cached: %s\n", WLEDClient_lastKnownPowerState ? "ON" : "OFF");
+      } else {
+        Serial.println("[WLED] Invalid power state JSON structure - keeping previous state");
+      }
+    } else {
+      Serial.println("[WLED] Failed to fetch power state - keeping previous state");
     }
   }
   return WLEDClient_lastKnownPowerState;
@@ -922,31 +985,55 @@ void WLEDClient_debugTest() {
   Serial.println("=== END DEBUG TEST ===\n");
 }
 
-// Missing function for compatibility
+// Missing function for compatibility with retry logic
 bool WLEDClient_sendCommand(const char* command) {
-  // Send a raw JSON command to WLED
+  // Send a raw JSON command to WLED with retry logic
   Serial.printf("[WLED] Sending raw command: %s\n", command);
   
-  // Use existing HTTP infrastructure to send the command
-  if (!WLEDClient_httpInitialized) {
-    if (!WLEDClient_initHTTP()) return false;
+  const int MAX_RETRIES = 2;
+  
+  for (int attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    // Use existing HTTP infrastructure to send the command
+    if (!WLEDClient_httpInitialized) {
+      if (!WLEDClient_initHTTP()) {
+        if (attempt < MAX_RETRIES) {
+          Serial.printf("[WLED] HTTP init failed, attempt %d/%d - retrying...\n", attempt, MAX_RETRIES);
+          delay(200);
+          continue;
+        }
+        return false;
+      }
+    }
+    
+    // Build URL
+    snprintf(WLEDClient_urlBuffer, URL_BUFFER_SIZE, "http://%s/json/state", WLED_IP);
+    
+    WLEDClient_http.begin(WLEDClient_urlBuffer);
+    WLEDClient_http.addHeader("Content-Type", "application/json");
+    
+    int httpCode = WLEDClient_http.POST(command);
+    WLEDClient_http.end();
+    
+    bool success = (httpCode >= 200 && httpCode < 300);
+    
+    if (success) {
+      if (attempt > 1) {
+        Serial.printf("[WLED] Send command success on attempt %d: %d\n", attempt, httpCode);
+      } else {
+        Serial.printf("[WLED] Send command success: %d\n", httpCode);
+      }
+      return true;
+    } else {
+      if (attempt < MAX_RETRIES) {
+        Serial.printf("[WLED] Send command failed (attempt %d/%d): %d - retrying...\n", attempt, MAX_RETRIES, httpCode);
+        delay(300);
+      } else {
+        Serial.printf("[WLED] Send command failed after %d attempts: %d\n", MAX_RETRIES, httpCode);
+      }
+    }
   }
   
-  // Build URL
-  snprintf(WLEDClient_urlBuffer, URL_BUFFER_SIZE, "http://%s/json/state", WLED_IP);
-  
-  WLEDClient_http.begin(WLEDClient_urlBuffer);
-  WLEDClient_http.addHeader("Content-Type", "application/json");
-  
-  int httpCode = WLEDClient_http.POST(command);
-  WLEDClient_http.end();
-  
-  bool success = (httpCode == 200);
-  if (!success) {
-    Serial.printf("[WLED] Send command failed: %d\n", httpCode);
-  }
-  
-  return success;
+  return false;
 }
 
 // ───── WLED Instance Friendly Name Fetching ─────
@@ -959,6 +1046,12 @@ void WLEDClient_fetchFriendlyNames() {
   Serial.println("[WLED] Fetching friendly names for all instances...");
   
   for (uint8_t i = 0; i < WLED_INSTANCE_COUNT; i++) {
+    // SAFETY: Validate array bounds and pointer before access
+    if (i >= WLED_INSTANCE_COUNT || !WLED_INSTANCES[i].ip) {
+      Serial.printf("[WLED] Skipping invalid instance %d\n", i);
+      continue;
+    }
+    
     Serial.printf("[WLED] Fetching name for instance %d: %s\n", i, WLED_INSTANCES[i].ip);
     
     // Use local HTTP client to avoid conflicts

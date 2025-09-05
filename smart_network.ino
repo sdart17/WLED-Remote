@@ -335,12 +335,20 @@ bool SNet_consolidateBatch(CommandBatch* batch) {
     DeserializationError error = deserializeJson(cmdDoc, cmd->payload);
     
     if (!error) {
-      // Merge command into main document
-      for (JsonPair kv : cmdDoc.as<JsonObject>()) {
-        doc[kv.key()] = kv.value();
+      // CRITICAL FIX: Validate document before processing
+      if (!cmdDoc.isNull() && cmdDoc.size() > 0 && cmdDoc.is<JsonObject>()) {
+        // Merge command into main document
+        for (JsonPair kv : cmdDoc.as<JsonObject>()) {
+          doc[kv.key()] = kv.value();
+        }
+      } else {
+        Serial.printf("[SNET] Invalid document structure in command: %s\n", cmd->payload);
       }
     } else {
       Serial.printf("[SNET] Failed to parse command payload: %s\n", cmd->payload);
+      // CRITICAL FIX: Clear document on error
+      cmdDoc.clear();
+      cmdDoc = JsonDocument();
     }
   }
   
@@ -633,8 +641,8 @@ uint32_t SNet_getAvgLatency() {
 // ───── Stub Functions When Smart Network is Disabled ─────
 void SNet_init() {}
 void SNet_update() {}
-bool SNet_queueCommand(uint8_t commandType, uint8_t value) { return NetworkTask_queueCommand(commandType, value); }
-bool SNet_queuePriorityCommand(uint8_t commandType, uint8_t value, uint8_t priority) { return NetworkTask_queueCommand(commandType, value); }
+bool SNet_queueCommand(uint8_t commandType, uint8_t value) { return NetworkTask_queueCommand((NetworkCommandType)commandType, value); }
+bool SNet_queuePriorityCommand(uint8_t commandType, uint8_t value, uint8_t priority) { return NetworkTask_queueCommand((NetworkCommandType)commandType, value); }
 void SNet_printStats() { Serial.println("[SNET] Smart network batching disabled"); }
 uint32_t SNet_getQueueDepth() { return 0; }
 float SNet_getSuccessRate() { return 1.0f; }

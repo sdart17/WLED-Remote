@@ -50,10 +50,27 @@ void NetworkTask_taskFunction(void* parameter) {
   WiFiManager_connect();
   
   Serial.println("[NET_TASK] Initializing WLED client...");
-  WLEDClient_initQuickLoads();
+  // CRITICAL FIX: Add error handling and memory monitoring
+  try {
+    if (WiFiManager_isConnected()) {
+      WLEDClient_initQuickLoads();
+      
+      Serial.println("[NET_TASK] Fetching WLED instance names...");
+      WLEDClient_fetchFriendlyNames();
+    } else {
+      Serial.println("[NET_TASK] WiFi not connected - skipping WLED initialization");
+    }
+  } catch (...) {
+    Serial.println("[NET_TASK] Exception caught during WLED initialization");
+  }
   
-  Serial.println("[NET_TASK] Fetching WLED instance names...");
-  WLEDClient_fetchFriendlyNames();
+  // CRITICAL FIX: Validate heap health after initialization
+  size_t freeHeap = ESP.getFreeHeap();
+  if (freeHeap < 50000) {
+    Serial.printf("[NET_TASK] WARNING: Low heap after init: %d bytes\n", freeHeap);
+  } else {
+    Serial.printf("[NET_TASK] Heap healthy after init: %d bytes\n", freeHeap);
+  }
   
   TickType_t lastWiFiUpdate = 0;
   TickType_t lastPeriodicSync = 0;
@@ -67,14 +84,21 @@ void NetworkTask_taskFunction(void* parameter) {
       uint32_t processingStart = millis();
       bool success = false;
       
+      // CRITICAL FIX: Monitor heap before processing command
+      size_t heapBefore = ESP.getFreeHeap();
+      if (heapBefore < 40000) {
+        Serial.printf("[NET_TASK] WARNING: Low heap before command: %d bytes\n", heapBefore);
+      }
+      
       // Update queue depth statistics
       UBaseType_t queueDepth = uxQueueMessagesWaiting(NetworkTask_commandQueue);
       if (queueDepth > NetworkTask_maxQueueDepth) {
         NetworkTask_maxQueueDepth = queueDepth;
       }
       
-      // Process command based on type
-      FreqManager_notifyNetworkActivity(); // PHASE 3: Notify frequency manager
+      // Process command based on type with error handling
+      try {
+        FreqManager_notifyNetworkActivity(); // PHASE 3: Notify frequency manager
       
       switch (cmd.type) {
         case NET_CMD_PRESET:
@@ -120,6 +144,17 @@ void NetworkTask_taskFunction(void* parameter) {
         default:
           Serial.printf("[NET_TASK] Unknown command type: %d\n", cmd.type);
           break;
+      }
+      
+      } catch (...) {
+        Serial.printf("[NET_TASK] CRITICAL: Exception caught processing command %d\n", cmd.type);
+        success = false;
+      }
+      
+      // CRITICAL FIX: Monitor heap after processing command
+      size_t heapAfter = ESP.getFreeHeap();
+      if (heapBefore > heapAfter + 5000) {
+        Serial.printf("[NET_TASK] WARNING: Command used %d bytes of heap\n", heapBefore - heapAfter);
       }
       
       // Provide visual feedback via encoder LED for HTTP commands
@@ -273,6 +308,52 @@ bool NetworkTask_requestWiFiReconnect() {
   return NetworkTask_queueCommand(NET_CMD_WIFI_RECONNECT, 0);
 }
 
+// ENHANCED: Fixed Quick Launch Preset Functions - Always use consistent preset IDs
+bool NetworkTask_queueFixedQuickLaunch1() {
+  // Always use Quick Launch ID 1 regardless of WLED instance
+  return NetworkTask_queueCommand(NET_CMD_QUICKLOAD, 1);
+}
+
+bool NetworkTask_queueFixedQuickLaunch2() {
+  // Always use Quick Launch ID 2 regardless of WLED instance  
+  return NetworkTask_queueCommand(NET_CMD_QUICKLOAD, 2);
+}
+
+bool NetworkTask_queueFixedQuickLaunch3() {
+  // Always use Quick Launch ID 3 regardless of WLED instance
+  return NetworkTask_queueCommand(NET_CMD_QUICKLOAD, 3);
+}
+
+bool NetworkTask_queueFixedQuickLaunch4() {
+  // Always use Quick Launch ID 4 regardless of WLED instance
+  return NetworkTask_queueCommand(NET_CMD_QUICKLOAD, 4);
+}
+
+bool NetworkTask_queueFixedQuickLaunch5() {
+  // Always use Quick Launch ID 5 regardless of WLED instance
+  return NetworkTask_queueCommand(NET_CMD_QUICKLOAD, 5);
+}
+
+bool NetworkTask_queueFixedQuickLaunch6() {
+  // Always use Quick Launch ID 6 regardless of WLED instance
+  return NetworkTask_queueCommand(NET_CMD_QUICKLOAD, 6);
+}
+
+bool NetworkTask_queueShufflePreset() {
+  // Send shuffle command - typically achieved by cycling through presets
+  return NetworkTask_queueCommand(NET_CMD_PRESET_CYCLE, 1); // next preset
+}
+
+bool NetworkTask_queueFullWhitePreset() {
+  // Send command for full white - this creates a solid white state
+  return NetworkTask_queueCommand(NET_CMD_PRESET, 0); // Preset 0 is typically solid color
+}
+
+bool NetworkTask_queueMusicPreset() {
+  // Send command for music-reactive preset - typically higher preset numbers
+  return NetworkTask_queueCommand(NET_CMD_PRESET, 255); // Use high preset ID for music mode
+}
+
 // ───── Status and Statistics ─────
 bool NetworkTask_isInitialized() {
   return NetworkTask_initialized;
@@ -351,6 +432,16 @@ bool NetworkTask_queueBrightness(uint8_t brightness) { return WLEDClient_queueBr
 bool NetworkTask_queuePowerToggle() { return WLEDClient_queuePowerToggle(); }
 bool NetworkTask_queuePresetCycle(bool next) { return WLEDClient_sendPresetCycle(next); }
 bool NetworkTask_queuePaletteCycle(bool next) { return WLEDClient_sendPaletteCycle(next); }
+// ENHANCED: Fixed Quick Launch Preset Functions (fallback implementations)
+bool NetworkTask_queueFixedQuickLaunch1() { return WLEDClient_queueQuickLoad(1); }
+bool NetworkTask_queueFixedQuickLaunch2() { return WLEDClient_queueQuickLoad(2); }
+bool NetworkTask_queueFixedQuickLaunch3() { return WLEDClient_queueQuickLoad(3); }
+bool NetworkTask_queueFixedQuickLaunch4() { return WLEDClient_queueQuickLoad(4); }
+bool NetworkTask_queueFixedQuickLaunch5() { return WLEDClient_queueQuickLoad(5); }
+bool NetworkTask_queueFixedQuickLaunch6() { return WLEDClient_queueQuickLoad(6); }
+bool NetworkTask_queueShufflePreset() { return WLEDClient_sendPresetCycle(true); }
+bool NetworkTask_queueFullWhitePreset() { return WLEDClient_queuePreset(0); }
+bool NetworkTask_queueMusicPreset() { return WLEDClient_queuePreset(255); }
 bool NetworkTask_requestSync() { WLEDClient_periodicSync(); return true; }
 bool NetworkTask_requestWiFiReconnect() { WiFiManager_forceReconnect(); return true; }
 bool NetworkTask_isInitialized() { return true; }

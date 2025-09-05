@@ -5,7 +5,7 @@
 // - Prefers "Set Colors" from state
 // - Else samples /json/live (throttled)  
 // - Else ROYGBIV fallback
-// FIXED: Hold steady for 4s, then cross-fade for 1s between colors
+// ENHANCED: Hold steady for 90% of cycle, then cross-fade for 10% between colors
 // FIXED: Encoder button now properly controls screen state
 // FIXED: Always falls back to ROYGBIV when WLED unavailable
 // ─────────────────────────────────────────────────────────────
@@ -25,10 +25,10 @@
   #define WLED_IP "wled.local"        // Prefer fixed IP in config.ino
 #endif
 
-// FIXED: Timing constants for hold/fade pattern
-#define TWIST_COLOR_HOLD_TIME_MS 4000UL    // Hold steady for 4 seconds
-#define TWIST_COLOR_FADE_TIME_MS 1000UL    // Cross-fade for 1 second
-#define TWIST_TOTAL_CYCLE_TIME_MS (TWIST_COLOR_HOLD_TIME_MS + TWIST_COLOR_FADE_TIME_MS)  // 5s total
+// ENHANCED: Timing constants for 90% hold / 10% transition pattern
+#define TWIST_TOTAL_CYCLE_TIME_MS 5000UL   // Total cycle time (5 seconds)
+#define TWIST_COLOR_HOLD_TIME_MS (TWIST_TOTAL_CYCLE_TIME_MS * 9 / 10)  // Hold for 90% = 4.5s
+#define TWIST_COLOR_FADE_TIME_MS (TWIST_TOTAL_CYCLE_TIME_MS / 10)      // Fade for 10% = 0.5s
 
 // Enable/Disable /json/live sampling (expensive if abused). ON + throttled.
 #ifndef TWIST_ENABLE_JSON_LIVE
@@ -380,10 +380,17 @@ static uint8_t lerp8(uint8_t a, uint8_t b, uint8_t t, uint8_t tmax) {
   return (uint8_t)(a + (diff * (int)t) / (int)tmax);
 }
 
-// FIXED: New animation system - hold for 4s, fade for 1s
+// FIXED: New animation system - hold for 4s, fade for 1s (supports solid colors)
 static void TwistManager_updatePaletteAnimation() {
   if (!TwistManager_usePaletteCycling || TwistManager_powerMode == TWIST_POWER_SAVING_LOCAL) return;
-  if (!TwistManager_wledPowerState || TwistManager_paletteColorCount < 2) return;
+  if (!TwistManager_wledPowerState || TwistManager_paletteColorCount < 1) return; // Changed to support solid colors
+
+  // FIXED: Handle single solid colors (don't cycle, just display)
+  if (TwistManager_paletteColorCount == 1) {
+    // For solid colors, just ensure we're displaying the single color
+    TwistManager_currentDisplayColor = TwistManager_paletteColors[0];
+    return;
+  }
 
   uint32_t now = millis();
   uint32_t elapsed = now - TwistManager_cycleStartTime;
@@ -557,13 +564,25 @@ static bool TwistManager_fetchWLEDPowerState() {
 // Use segment "Set Colors" if available (no TwistRGB types in signature)
 static void TwistManager_buildFallbackFromSegment(const JsonObject& seg) {
   TwistManager_paletteColorCount = 0;
-  if (!seg["col"].is<JsonArray>()) return;
+  
+  // CRITICAL FIX: Defensive validation - ensure seg is valid and has col array
+  if (seg.isNull()) {
+    Serial.println("[TWIST] buildFallbackFromSegment: seg is null");
+    return;
+  }
+  if (!seg["col"].is<JsonArray>()) {
+    Serial.println("[TWIST] buildFallbackFromSegment: no col array in seg");
+    return;
+  }
 
   for (JsonVariant cv : seg["col"].as<JsonArray>()) {
     if (!cv.is<JsonArray>()) continue;
     JsonArray ca = cv.as<JsonArray>();
     if (ca.size() < 3) continue;
 
+    // CRITICAL FIX: Safe array access with validation
+    if (!ca[0].is<int>() || !ca[1].is<int>() || !ca[2].is<int>()) continue;
+    
     uint8_t rin = (uint8_t)ca[0];
     uint8_t gin = (uint8_t)ca[1];
     uint8_t bin = (uint8_t)ca[2];
@@ -634,7 +653,19 @@ static void TwistManager_tryJsonLiveSample() {
   http.end();
 
   JsonDocument live;
-  if (deserializeJson(live, payload)) { Serial.println("[TWIST] live: JSON parse error"); return; }
+  if (deserializeJson(live, payload)) { 
+    Serial.println("[TWIST] live: JSON parse error"); 
+    live.clear(); // CRITICAL FIX: Clear document on error
+    live = JsonDocument(); // Reset to empty state
+    return; 
+  }
+  
+  // CRITICAL FIX: Additional validation after successful parse
+  if (live.isNull() || live.size() == 0) {
+    Serial.println("[TWIST] live: Document null or empty after parse");
+    live.clear();
+    return;
+  }
   if (!live["leds"].is<JsonArray>()) { Serial.println("[TWIST] live: leds[] missing"); return; }
 
   JsonArray leds = live["leds"];
@@ -717,33 +748,40 @@ void TwistManager_fetchWLEDPalette() {
     TwistManager_useFallbackROYGBIV(); 
     return; 
   }
+  
+  // CRITICAL FIX: Validate seg[0] is a valid object before accessing it
+  if (!segs[0].is<JsonObject>()) {
+    Serial.println("[TWIST] Fallback: seg[0] is not a valid object");
+    TwistManager_useFallbackROYGBIV(); 
+    return; 
+  }
   JsonObject seg0 = segs[0];
 
   int paletteId = seg0["pal"].is<int>() ? (int)seg0["pal"] : -1;
 
-  // 1) Try "Set Colors" fast path
+  // 1) Try "Set Colors" and solid color fast path
   TwistManager_paletteColorCount = 0;
-  if (paletteId == 4 /*Set Colors*/ || paletteId == 5 /*Based on Set Colors*/) {
+  if (paletteId == 4 /*Set Colors*/ || paletteId == 5 /*Based on Set Colors*/ || paletteId == 0 /*Solid*/) {
     TwistManager_buildFallbackFromSegment(seg0);
-    if (TwistManager_paletteColorCount >= 2) {
-      Serial.printf("[TWIST] seg.col yielded %u colors\n", TwistManager_paletteColorCount);
+    if (TwistManager_paletteColorCount >= 1) { // Changed from >= 2 to >= 1 for solid colors
+      Serial.printf("[TWIST] seg.col yielded %u colors (palette %d)\n", TwistManager_paletteColorCount, paletteId);
     } else {
-      Serial.println("[TWIST] seg.col yielded <2 colors");
+      Serial.printf("[TWIST] seg.col yielded <1 colors (palette %d)\n", paletteId);
     }
   } else {
-    Serial.printf("[TWIST] pal=%d (not Set Colors); trying /json/live\n", paletteId);
+    Serial.printf("[TWIST] pal=%d (not Set Colors/Solid); trying /json/live\n", paletteId);
   }
 
   // 2) If not enough colors, take a quick sample of actual output
   #if TWIST_ENABLE_JSON_LIVE
-  if (TwistManager_paletteColorCount < 2) {
+  if (TwistManager_paletteColorCount < 1) { // Changed from < 2 to < 1 for solid colors
     TwistManager_tryJsonLiveSample();
   }
   #endif
 
   // 3) Still not enough? ROYGBIV fallback
-  if (TwistManager_paletteColorCount < 2) {
-    Serial.println("[TWIST] Fallback: <2 colors after seg/liv; using ROYGBIV");
+  if (TwistManager_paletteColorCount < 1) { // Changed from < 2 to < 1 for solid colors
+    Serial.println("[TWIST] Fallback: <1 colors after seg/liv; using ROYGBIV");
     TwistManager_useFallbackROYGBIV();
     return;
   }
@@ -779,6 +817,12 @@ void TwistManager_exitPowerSave() {
 void TwistManager_showHTTPFeedback(bool success) {
   if (!TwistManager_available) return;
   
+  // CRITICAL FIX: Don't show HTTP feedback in power saving mode
+  if (TwistManager_powerMode == TWIST_POWER_SAVING_LOCAL) {
+    Serial.printf("[TWIST] Skipping HTTP feedback in power save mode: %s\n", success ? "SUCCESS" : "FAILURE");
+    return;
+  }
+  
   Serial.printf("[TWIST] HTTP feedback starting: %s (success=%d)\n", success ? "SUCCESS" : "FAILURE", success);
   
   // Store original color to restore later
@@ -806,6 +850,14 @@ void TwistManager_showHTTPFeedback(bool success) {
 
 void TwistManager_updateHTTPFeedback() {
   if (!TwistManager_feedbackActive || !TwistManager_available) return;
+  
+  // CRITICAL FIX: Stop feedback immediately if power mode changed to saving
+  if (TwistManager_powerMode == TWIST_POWER_SAVING_LOCAL) {
+    TwistManager_feedbackActive = false;
+    TwistManager_twist.setColor(0, 0, 0); // Turn off LED immediately
+    Serial.println("[TWIST] HTTP feedback cancelled - entering power save mode");
+    return;
+  }
   
   uint32_t now = millis();
   uint32_t elapsed = now - TwistManager_feedbackStartTime;
@@ -849,9 +901,15 @@ void TwistManager_updateHTTPFeedback() {
 }
 
 // ───── PALETTE PREVIEW FEATURE ─────
-// Shows a preview of the new palette colors after successful preset change
+// Shows a preview of the new palette colors after successful preset change (supports solid colors)
 void TwistManager_startPalettePreview() {
-  if (!TwistManager_available || TwistManager_paletteColorCount < 2) return;
+  if (!TwistManager_available || TwistManager_paletteColorCount < 1) return; // Changed to support solid colors
+  
+  // CRITICAL FIX: Don't start preview in power saving mode
+  if (TwistManager_powerMode == TWIST_POWER_SAVING_LOCAL) {
+    Serial.println("[TWIST] Skipping palette preview - in power save mode");
+    return;
+  }
   
   // Don't start preview if already active or if feedback is active
   if (TwistManager_palettePreviewActive || TwistManager_feedbackActive) return;
@@ -873,6 +931,14 @@ void TwistManager_startPalettePreview() {
 
 void TwistManager_updatePalettePreview() {
   if (!TwistManager_palettePreviewActive || !TwistManager_available) return;
+  
+  // CRITICAL FIX: Stop preview immediately if power mode changed to saving
+  if (TwistManager_powerMode == TWIST_POWER_SAVING_LOCAL) {
+    TwistManager_palettePreviewActive = false;
+    TwistManager_twist.setColor(0, 0, 0); // Turn off LED immediately
+    Serial.println("[TWIST] Palette preview cancelled - entering power save mode");
+    return;
+  }
   
   uint32_t now = millis();
   uint32_t elapsed = now - TwistManager_palettePreviewStartTime;
@@ -930,8 +996,9 @@ void TwistManager_checkScheduledPreview() {
   if (now >= TwistManager_palettePreviewScheduledTime) {
     TwistManager_palettePreviewScheduled = false;
     
-    // Only start if feedback is not active and we're not already previewing
-    if (!TwistManager_feedbackActive && !TwistManager_palettePreviewActive) {
+    // Only start if feedback is not active, we're not already previewing, and not in power save mode
+    if (!TwistManager_feedbackActive && !TwistManager_palettePreviewActive && 
+        TwistManager_powerMode != TWIST_POWER_SAVING_LOCAL) {
       // Refresh palette from WLED first, then start preview
       TwistManager_fetchWLEDPalette();
       TwistManager_startPalettePreview();

@@ -16,7 +16,7 @@
 // Set to true to enable WLED instance selection page
 // Set to false to use only the default first instance
 #ifndef ENABLE_WLED_SELECTION_PAGE
-#define ENABLE_WLED_SELECTION_PAGE true
+#define ENABLE_WLED_SELECTION_PAGE true   // Re-enabled: not the crash source
 #endif
 
 #include <Arduino.h>
@@ -46,15 +46,50 @@ static WLEDInstance WLED_INSTANCES[] = {
   {"192.168.6.220", "Scott Bedroom"},
   {"192.168.4.42", "Hexagons"},
   {"192.168.4.76", "Seattle Skyline"},
+  {"192.168.7.80", "Anycubic"},
 };
 
-static const uint8_t WLED_INSTANCE_COUNT = sizeof(WLED_INSTANCES) / sizeof(WLEDInstance);
-static uint8_t CURRENT_WLED_INSTANCE = 0;  // Default to first instance
+const uint8_t WLED_INSTANCE_COUNT = sizeof(WLED_INSTANCES) / sizeof(WLEDInstance);
+uint8_t CURRENT_WLED_INSTANCE = 0;  // Default to first instance
+
+// CRITICAL: Failsafe to ensure CURRENT_WLED_INSTANCE is always valid
+inline void ensureValidWLEDInstance() {
+  if (CURRENT_WLED_INSTANCE >= WLED_INSTANCE_COUNT) {
+    CURRENT_WLED_INSTANCE = 0;
+    Serial.printf("[WLED] Reset invalid instance index to 0\n");
+  }
+}
+
+// SAFETY: Safe access functions for WLED instances
+inline bool isValidWLEDInstance(uint8_t index) {
+  return (index < WLED_INSTANCE_COUNT);
+}
+
+inline const char* safeGetWLEDIP(uint8_t index) {
+  if (isValidWLEDInstance(index) && WLED_INSTANCES[index].ip) {
+    return WLED_INSTANCES[index].ip;
+  }
+  return "192.168.6.220"; // Fallback IP
+}
+
+inline const char* safeGetWLEDName(uint8_t index) {
+  if (isValidWLEDInstance(index) && WLED_INSTANCES[index].friendlyName) {
+    return WLED_INSTANCES[index].friendlyName;
+  }
+  return safeGetWLEDIP(index); // Fallback to IP
+}
 
 static const uint16_t HTTP_TIMEOUT_MS = 500; // AGGRESSIVE: Ultra-fast timeout
 
-// Legacy compatibility - points to current selected instance
-#define WLED_IP (WLED_INSTANCES[CURRENT_WLED_INSTANCE].ip)
+// Legacy compatibility - points to current selected instance with safety check
+inline const char* getWLEDIP() {
+  ensureValidWLEDInstance();
+  if (CURRENT_WLED_INSTANCE < WLED_INSTANCE_COUNT && WLED_INSTANCES[CURRENT_WLED_INSTANCE].ip) {
+    return WLED_INSTANCES[CURRENT_WLED_INSTANCE].ip;
+  }
+  return "192.168.6.220"; // Fallback to first instance IP
+}
+#define WLED_IP getWLEDIP()
 
 // ───────── PHASE 3: WebSocket WLED Communication ─────────
 #define ENABLE_WEBSOCKET_WLED false       // DISABLED: Battery drain and connection instability
@@ -92,19 +127,19 @@ static const uint16_t HTTP_TIMEOUT_MS = 500; // AGGRESSIVE: Ultra-fast timeout
 #define JSON_STACK_SIZE 2048             // Fixed JSON document size
 
 // ───────── PHASE 3: Advanced Memory Management ─────────
-#define ENABLE_MEMORY_OPTIMIZATION true  // Enable advanced memory optimization
-#define MEMORY_POOL_SIZE 32768           // 32KB memory pool for frequent allocations
-#define PSRAM_CACHE_SIZE 131072          // 128KB PSRAM cache for large assets
-#define MEMORY_DEFRAG_THRESHOLD 0.7f     // Trigger defrag when 70% fragmented
-#define MEMORY_GC_INTERVAL_MS 30000      // Garbage collection every 30s
+#define ENABLE_MEMORY_OPTIMIZATION false // DISABLED: Potential cause of crashes
+#define MEMORY_POOL_SIZE 16384           // 16KB memory pool (reduced)
+#define PSRAM_CACHE_SIZE 65536           // 64KB PSRAM cache (reduced)
+#define MEMORY_DEFRAG_THRESHOLD 0.8f     // More conservative defrag threshold
+#define MEMORY_GC_INTERVAL_MS 60000      // Less frequent garbage collection
 
 // ───────── PHASE 4: Advanced UI and Intelligence ─────────
-#define ENABLE_SMOOTH_ANIMATIONS true         // Enable smooth UI transitions and animations
-#define ENABLE_INTELLIGENT_POWER true         // Enable intelligent power management
-#define ENABLE_PREDICTIVE_SCALING true        // Enable predictive performance scaling
+#define ENABLE_SMOOTH_ANIMATIONS false        // DISABLED: Potential crash source
+#define ENABLE_INTELLIGENT_POWER false        // DISABLED: Potential crash source
+#define ENABLE_PREDICTIVE_SCALING false       // DISABLED: Potential crash source
 #define ENABLE_DIFFERENTIAL_RENDERING false   // DISABLED: Causing UI corruption during boot
-#define ENABLE_SMART_CACHING true             // Enable contextual asset preloading
-#define ENABLE_SYSTEM_TELEMETRY true          // Enable system telemetry and optimization
+#define ENABLE_SMART_CACHING false            // DISABLED: Potential crash source
+#define ENABLE_SYSTEM_TELEMETRY false         // DISABLED: Potential crash source
 
 // ───────── Display Pin Configuration ─────────
 #define PIN_LCD_MOSI 45
@@ -133,9 +168,9 @@ static const uint32_t SD_SPI_HZ = 40000000; // OPTIMIZED: Increased from 20MHz
 // ───────── Display Constants ─────────
 static const uint16_t SCREEN_WIDTH = 240;
 static const uint16_t SCREEN_HEIGHT = 320;
-// Dynamic screen timeout based on power source
-static const uint32_t SCREEN_TIMEOUT_BATTERY_MS = 30UL * 1000UL;  // 30 seconds on battery
-static const uint32_t SCREEN_TIMEOUT_PLUGGED_MS = 5UL * 60UL * 1000UL;  // 5 minutes when plugged in
+// Dynamic screen timeout based on power source - EXTENDED for active use
+static const uint32_t SCREEN_TIMEOUT_BATTERY_MS = 10UL * 60UL * 1000UL; // 10 minutes on battery
+static const uint32_t SCREEN_TIMEOUT_PLUGGED_MS = 15UL * 60UL * 1000UL; // 15 minutes when plugged in
 
 // Function to get current screen timeout based on power source
 inline uint32_t getScreenTimeout() {

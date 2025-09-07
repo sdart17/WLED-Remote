@@ -38,6 +38,12 @@ static int UIManager_lastEffectId = -1;
 static int UIManager_lastPaletteId = -1;
 static bool UIManager_forceNowPlayingUpdate = true; // Force first update
 
+// Cycling state tracking - remember last positions to handle inactive states
+static int UIManager_lastPlaylistIndex = -1;
+static int UIManager_lastPresetIndex = -1;
+static int UIManager_lastEffectIndex = -1;
+static int UIManager_lastPaletteIndex = -1;
+
 // FIXED: Add swipe detection and suppression
 static bool UIManager_swipeDetected = false;
 static const uint32_t SWIPE_SUPPRESS_TIME_MS = 300; // Suppress touches for 300ms after swipe
@@ -1608,10 +1614,8 @@ void UIManager_activatePlaylist(int playlistId) {
   
   if (WLEDClient_sendCommand(postData)) {
     Serial.printf("[UI] Successfully activated playlist %d\n", playlistId);
-    // Force immediate UI refresh to show new state
+    // Trigger selective update mechanism instead of full repaint
     UIManager_forceNowPlayingUpdate = true;
-    UIManager_needsFullRepaint = true;
-    UIManager_paintPage();
   } else {
     Serial.printf("[UI] Failed to activate playlist %d\n", playlistId);
   }
@@ -1639,11 +1643,29 @@ void UIManager_handlePlaylistComboTouch() {
   
   // Find current playlist in the list and select next one
   int nextIndex = 0;
+  bool foundCurrentPlaylist = false;
+  
   for (int i = 0; i < playlistCount; i++) {
-    if (playlistIds[i] == currentPlaylistId) {
+    if (playlistIds[i] == currentPlaylistId && currentPlaylistId > 0) {
       nextIndex = (i + 1) % playlistCount;  // Cycle to next, wrap around
+      UIManager_lastPlaylistIndex = nextIndex; // Remember position
+      foundCurrentPlaylist = true;
       break;
     }
+  }
+  
+  // Handle case when no playlist is active or current playlist not found
+  if (!foundCurrentPlaylist) {
+    if (UIManager_lastPlaylistIndex >= 0 && UIManager_lastPlaylistIndex < playlistCount) {
+      // Continue from last known position
+      nextIndex = UIManager_lastPlaylistIndex;
+      UIManager_lastPlaylistIndex = (nextIndex + 1) % playlistCount; // Advance for next time
+    } else {
+      // Start from beginning
+      nextIndex = 0;
+      UIManager_lastPlaylistIndex = 1; // Next time start from second playlist
+    }
+    Serial.printf("[UI] No active playlist found, using saved position: %d\n", nextIndex);
   }
   
   int nextPlaylistId = playlistIds[nextIndex];
@@ -1755,10 +1777,8 @@ void UIManager_activatePreset(int presetId) {
   
   if (WLEDClient_sendCommand(postData)) {
     Serial.printf("[UI] Successfully activated preset %d\n", presetId);
-    // Force immediate UI refresh to show new state
+    // Trigger selective update mechanism instead of full repaint
     UIManager_forceNowPlayingUpdate = true;
-    UIManager_needsFullRepaint = true;
-    UIManager_paintPage();
   } else {
     Serial.printf("[UI] Failed to activate preset %d\n", presetId);
   }
@@ -1786,11 +1806,29 @@ void UIManager_handlePresetComboTouch() {
   
   // Find current preset in the list and select next one
   int nextIndex = 0;
+  bool foundCurrentPreset = false;
+  
   for (int i = 0; i < presetCount; i++) {
-    if (presetIds[i] == currentPresetId) {
+    if (presetIds[i] == currentPresetId && currentPresetId > 0) {
       nextIndex = (i + 1) % presetCount;  // Cycle to next, wrap around
+      UIManager_lastPresetIndex = nextIndex; // Remember position
+      foundCurrentPreset = true;
       break;
     }
+  }
+  
+  // Handle case when no preset is active or current preset not found
+  if (!foundCurrentPreset) {
+    if (UIManager_lastPresetIndex >= 0 && UIManager_lastPresetIndex < presetCount) {
+      // Continue from last known position
+      nextIndex = UIManager_lastPresetIndex;
+      UIManager_lastPresetIndex = (nextIndex + 1) % presetCount; // Advance for next time
+    } else {
+      // Start from beginning
+      nextIndex = 0;
+      UIManager_lastPresetIndex = 1; // Next time start from second preset
+    }
+    Serial.printf("[UI] No active preset found, using saved position: %d\n", nextIndex);
   }
   
   int nextPresetId = presetIds[nextIndex];
@@ -1901,10 +1939,8 @@ void UIManager_changeEffect(int effectId) {
   
   if (WLEDClient_sendCommand(postData)) {
     Serial.printf("[UI] Successfully changed to effect %d\n", effectId);
-    // Force immediate UI refresh to show new state
+    // Trigger selective update mechanism instead of full repaint
     UIManager_forceNowPlayingUpdate = true;
-    UIManager_needsFullRepaint = true;
-    UIManager_paintPage();
   } else {
     Serial.printf("[UI] Failed to change effect to %d\n", effectId);
   }
@@ -2041,10 +2077,8 @@ void UIManager_changePalette(int paletteId) {
   
   if (WLEDClient_sendCommand(postData)) {
     Serial.printf("[UI] Successfully changed to palette %d\n", paletteId);
-    // Force immediate UI refresh to show new state
+    // Trigger selective update mechanism instead of full repaint
     UIManager_forceNowPlayingUpdate = true;
-    UIManager_needsFullRepaint = true;
-    UIManager_paintPage();
   } else {
     Serial.printf("[UI] Failed to change palette to %d\n", paletteId);
   }
@@ -2768,14 +2802,143 @@ void UIManager_checkAndUpdateNowPlaying() {
   }
 }
 
+// Update just the text content of a combo box without redrawing borders/arrows
+void UIManager_updateComboBoxText(int x, int y, int w, int h, const char* label, JsonDocument& doc, bool dataAvailable) {
+  auto& tft = DisplayManager_getTFT();
+  
+  // Clear the text area (leave arrows and borders intact)
+  int textStartX = x + 15; // Space for left arrow
+  int textWidth = w - 25;   // Space for both arrows
+  int textY = y + h/2 - 4;  // Center vertically
+  
+  // Clear text background
+  tft.fillRect(textStartX, textY - 8, textWidth, 16, ST77XX_BLACK);
+  
+  // Get the appropriate text based on label
+  char valueText[32];
+  if (strcmp(label, "Playlist") == 0) {
+    UIManager_getPlaylistText(doc, dataAvailable, valueText, sizeof(valueText));
+  } else if (strcmp(label, "Preset") == 0) {
+    UIManager_getPresetText(doc, dataAvailable, valueText, sizeof(valueText));
+  } else if (strcmp(label, "Effect") == 0) {
+    UIManager_getEffectText(doc, dataAvailable, valueText, sizeof(valueText));
+  } else {
+    snprintf(valueText, sizeof(valueText), "Unknown");
+  }
+  
+  // Draw updated text
+  tft.setTextSize(2);
+  tft.setTextColor(dataAvailable ? ST77XX_WHITE : 0x8410, ST77XX_BLACK);
+  tft.setCursor(textStartX, textY);
+  
+  // Truncate if needed
+  int maxChars = textWidth / 12;
+  if (maxChars > 15) maxChars = 15;
+  
+  if (strlen(valueText) > maxChars) {
+    char truncated[18];
+    strncpy(truncated, valueText, maxChars - 3);
+    strncpy(truncated + maxChars - 3, "...", 4);
+    tft.print(truncated);
+  } else {
+    tft.print(valueText);
+  }
+}
+
+// Update just the palette combo box text and swatches
+void UIManager_updatePaletteComboBox(int x, int y, int w, int h, JsonDocument& doc, bool dataAvailable) {
+  auto& tft = DisplayManager_getTFT();
+  
+  // Clear palette name area
+  int textStartX = x + 15; // Space for left arrow  
+  int textWidth = w - 25;  // Space for both arrows
+  tft.fillRect(textStartX, y + 15, textWidth, 20, ST77XX_BLACK);
+  
+  // Clear swatches area
+  tft.fillRect(textStartX, y + 40, textWidth, 25, ST77XX_BLACK);
+  
+  if (!dataAvailable) {
+    tft.setTextSize(2);
+    tft.setTextColor(0x8410, ST77XX_BLACK);
+    tft.setCursor(textStartX, y + 20);
+    tft.print("No data");
+    return;
+  }
+  
+  // Get palette info
+  char paletteName[24];
+  int paletteId = -1;
+  UIManager_getPaletteInfo(doc, paletteName, sizeof(paletteName), &paletteId);
+  
+  // Draw palette name
+  tft.setTextSize(2);
+  tft.setTextColor(ST77XX_WHITE, ST77XX_BLACK);
+  tft.setCursor(textStartX, y + 20);
+  
+  int maxChars = textWidth / 12;
+  if (maxChars > 12) maxChars = 12;
+  
+  if (strlen(paletteName) > maxChars) {
+    char truncated[15];
+    strncpy(truncated, paletteName, maxChars - 3);
+    strncpy(truncated + maxChars - 3, "...", 4);
+    tft.print(truncated);
+  } else {
+    tft.print(paletteName);
+  }
+  
+  // Draw swatches
+  if (paletteId > 0) {
+    UIManager_drawPaletteSwatches(textStartX, y + 45, paletteId);
+  }
+}
+
 // Update specific sections of Now Playing display
 void UIManager_updateNowPlayingSections(JsonObject state, JsonObject seg, 
                                        bool presetChanged, bool effectChanged, 
                                        bool paletteChanged, bool colorsChanged) {
-  // For now, just do a full update - this could be optimized later to update individual text areas
-  Serial.println("[UI] Performing selective update (full repaint for now)");
-  UIManager_needsFullRepaint = true;
-  UIManager_paintPage();
+  Serial.println("[UI] Performing selective text updates");
+  
+  if (!DisplayManager_isScreenOn()) {
+    Serial.println("[UI] Screen off - skipping selective update");
+    return;
+  }
+  
+  // Calculate combo box positions (same as in drawNowPlayingPage)
+  const int margin = 10;
+  const int comboWidth = 220;
+  const int normalHeight = 40;
+  const int doubleHeight = 70;
+  const int spacing = 8;
+  
+  int comboY = 30; // Start position
+  auto& tft = DisplayManager_getTFT();
+  JsonDocument doc;
+  doc["state"] = state;
+  
+  // Update playlist combo box text if preset changed (playlist is part of preset system)
+  if (presetChanged || UIManager_forceNowPlayingUpdate) {
+    comboY += normalHeight + spacing; // Skip to playlist position
+    UIManager_updateComboBoxText(margin, comboY, comboWidth, normalHeight, "Playlist", doc, true);
+    comboY += normalHeight + spacing;
+    
+    // Also update preset combo box
+    UIManager_updateComboBoxText(margin, comboY, comboWidth, normalHeight, "Preset", doc, true);  
+    comboY += normalHeight + spacing;
+  } else {
+    comboY += 2 * (normalHeight + spacing); // Skip playlist and preset
+  }
+  
+  // Update effect combo box text if effect changed
+  if (effectChanged || UIManager_forceNowPlayingUpdate) {
+    UIManager_updateComboBoxText(margin, comboY, comboWidth, normalHeight, "Effect", doc, true);
+  }
+  comboY += normalHeight + spacing;
+  
+  // Update palette combo box text and swatches if palette changed
+  if (paletteChanged || colorsChanged || UIManager_forceNowPlayingUpdate) {
+    UIManager_updatePaletteComboBox(margin, comboY, comboWidth, doubleHeight, doc, true);
+  }
 }
 
 // NEW: Check if brightness page is enabled

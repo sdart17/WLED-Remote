@@ -14,9 +14,15 @@
 #endif
 
 // Set to true to enable WLED instance selection page
-// Set to false to use only the default first instance
+// Set to false to use only the default first instance (now integrated into now playing page)
 #ifndef ENABLE_WLED_SELECTION_PAGE
-#define ENABLE_WLED_SELECTION_PAGE true   // Re-enabled: not the crash source
+#define ENABLE_WLED_SELECTION_PAGE false   // Disabled: functionality merged into now playing page
+#endif
+
+// Set to true to enable now playing page showing current WLED state
+// Set to false to disable the now playing information display
+#ifndef ENABLE_NOW_PLAYING_PAGE
+#define ENABLE_NOW_PLAYING_PAGE true    // Re-enabled: crashes fixed by guarding advanced features
 #endif
 
 #include <Arduino.h>
@@ -47,6 +53,7 @@ static WLEDInstance WLED_INSTANCES[] = {
   {"192.168.4.42", "Hexagons"},
   {"192.168.4.76", "Seattle Skyline"},
   {"192.168.7.80", "Anycubic"},
+  {"192.168.6.221", "12x6 Tessalation"}
 };
 
 const uint8_t WLED_INSTANCE_COUNT = sizeof(WLED_INSTANCES) / sizeof(WLEDInstance);

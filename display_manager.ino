@@ -6,6 +6,7 @@
 // Display manager state variables
 static Adafruit_ST7789 DisplayManager_tft(PIN_LCD_CS, PIN_LCD_DC, PIN_LCD_RST);
 static bool DisplayManager_screenOn = true;
+static bool DisplayManager_initialized = false;  // CRASH FIX: Track initialization state
 static uint32_t DisplayManager_lastActivity = 0;
 
 // OPTIMIZED: Smart display update management - reduced frequency
@@ -42,6 +43,7 @@ void DisplayManager_init() {
   DisplayManager_tft.setTextWrap(false); // Disable text wrapping globally
   
   DisplayManager_lastActivity = millis();
+  DisplayManager_initialized = true;  // CRASH FIX: Mark as initialized after successful setup
   
   Serial.println("[DISPLAY] Initialized - 240x320 @ 20MHz SPI (init mode)");
 }
@@ -156,7 +158,7 @@ void DisplayManager_syncScreenState() {
 }
 
 bool DisplayManager_isScreenOn() {
-  return DisplayManager_screenOn;
+  return DisplayManager_screenOn && DisplayManager_initialized;  // CRASH FIX: Only true if initialized
 }
 
 Adafruit_ST7789& DisplayManager_getTFT() {

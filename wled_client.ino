@@ -32,7 +32,9 @@ bool WiFiManager_isConnected();
 #define URL_BUFFER_SIZE 256
 #define RESPONSE_BUFFER_SIZE 1024
 
-// ───── OPTIMIZED: Persistent HTTP client for connection reuse ─────
+// ───── LWIP CRASH FIX: Global HTTP client synchronization ─────
+static bool WLEDClient_httpInUse = false;  // Prevent concurrent HTTP operations
+static uint32_t WLEDClient_httpInUseStartTime = 0; // Track when HTTP became busy
 static HTTPClient WLEDClient_http;
 static WiFiClient WLEDClient_wifiClient;
 static bool WLEDClient_httpInitialized = false;
@@ -87,12 +89,14 @@ static inline void WLEDClient_resetBackoff() {
   WLEDClient_lastSuccessMs = millis();
 }
 
-// ───── SAFE HTTP CLEANUP ─────
+// ───── LWIP CRASH FIX: Safe HTTP cleanup with proper synchronization ─────
 static void WLEDClient_safeHTTPCleanup() {
   Serial.println("[WLED] Safe HTTP cleanup");
   WLEDClient_http.end();
   WLEDClient_httpInitialized = false;
-  delay(50); // Small delay for lwIP cleanup
+  WLEDClient_httpInUse = false;  // LWIP FIX: Release the lock
+  WLEDClient_httpInUseStartTime = 0; // Reset timing
+  delay(100); // Longer delay for lwIP cleanup to prevent pbuf issues
   yield(); // Allow background processing
 }
 
@@ -325,13 +329,32 @@ bool WLEDClient_sendWledCommand(const char* jsonBody) {
 // ─────────────────────────────────────────────────────────────
 template<typename TDoc>
 bool WLEDClient_fetchWledState(TDoc& doc) {
+  // LWIP CRASH FIX: Check if HTTP client is already in use with timeout
+  if (WLEDClient_httpInUse) {
+    uint32_t now = millis();
+    uint32_t busyTime = now - WLEDClient_httpInUseStartTime;
+    
+    if (busyTime > 10000) { // 10 second timeout
+      Serial.printf("[WLED] HTTP client stuck busy for %dms - force releasing\n", busyTime);
+      WLEDClient_safeHTTPCleanup();
+    } else {
+      Serial.printf("[WLED] HTTP client busy - skipping state fetch (busy for %dms)\n", busyTime);
+      return false;
+    }
+  }
+  
   if (!WiFiManager_isConnected()) { Serial.println("[HTTP][GET] WiFi down"); return false; }
   if (!WLEDClient_guard()) return false;
+
+  // LWIP CRASH FIX: Lock HTTP client for exclusive use
+  WLEDClient_httpInUse = true;
+  WLEDClient_httpInUseStartTime = millis();
 
   // MEMORY MONITORING: Log heap before network operation
   size_t heapBefore = ESP.getFreeHeap();
   
   if (!WLEDClient_initHTTP()) {
+    WLEDClient_httpInUse = false;  // LWIP FIX: Release lock on failure
     WLEDClient_backoff();
     return false;
   }
@@ -341,6 +364,7 @@ bool WLEDClient_fetchWledState(TDoc& doc) {
 
   if (!WLEDClient_http.begin(WLEDClient_wifiClient, WLEDClient_urlBuffer)) {
     Serial.printf("[HTTP][GET] begin() failed for %s\n", WLEDClient_urlBuffer);
+    WLEDClient_httpInUse = false;  // LWIP FIX: Release lock on failure
     WLEDClient_backoff();
     return false;
   }
@@ -353,46 +377,41 @@ bool WLEDClient_fetchWledState(TDoc& doc) {
     return false;
   }
 
-  // OPTIMIZED: Stream directly to ArduinoJson to minimize RAM usage
-  WiFiClient* stream = WLEDClient_http.getStreamPtr();
+  // LWIP CRASH FIX: Use String buffer instead of direct stream to avoid pbuf issues
+  String responsePayload = WLEDClient_http.getString();
   
-  // Safety check for null pointer
-  if (!stream) {
-    Serial.println("[JSON] ERROR: getStreamPtr() returned null");
-    WLEDClient_http.end();
+  // Always cleanup socket BEFORE processing data to prevent pbuf reference issues
+  WLEDClient_http.end();
+  delay(50);  // LWIP CRASH FIX: Allow time for socket cleanup
+  
+  // Validate response payload
+  if (responsePayload.length() == 0) {
+    Serial.println("[JSON] ERROR: Empty response payload");
+    WLEDClient_httpInUse = false;  // LWIP FIX: Release lock on failure
     WLEDClient_backoff();
     return false;
   }
   
-  // Additional safety check: verify stream is connected and has data
-  if (!stream->connected()) {
-    Serial.println("[JSON] ERROR: Stream not connected");
-    WLEDClient_http.end();
-    WLEDClient_backoff();
-    return false;
-  }
-  
-  // Check if stream has available data before dereferencing
-  if (!stream->available()) {
-    Serial.println("[JSON] WARNING: No data available in stream");
-    WLEDClient_http.end();
+  if (responsePayload.length() > 8192) {  // Reasonable size limit
+    Serial.printf("[JSON] ERROR: Response too large: %d bytes\n", responsePayload.length());
+    WLEDClient_httpInUse = false;  // LWIP FIX: Release lock on failure
     WLEDClient_backoff();
     return false;
   }
   
   DeserializationError e;
-  // Use safer approach - avoid direct dereferencing in case of memory corruption
-  e = deserializeJson(doc, *stream);
+  // LWIP CRASH FIX: Parse from String buffer instead of live stream
+  e = deserializeJson(doc, responsePayload);
   
-  // Always cleanup socket
-  WLEDClient_http.end();
+  // Clear the response payload immediately after parsing
+  responsePayload = String();
   
   if (e) {
     Serial.printf("[JSON] parse error: %s\n", e.c_str());
-    // CRITICAL FIX: Completely invalidate the document and add poisoning
+    // CRITICAL FIX: Completely invalidate the document
     doc.clear();
-    doc = JsonDocument(); // Reset to completely empty state
     Serial.printf("[WLED] JSON parse failed - document invalidated\n");
+    WLEDClient_httpInUse = false;  // LWIP FIX: Release lock on failure
     WLEDClient_backoff();
     return false;
   }
@@ -401,6 +420,7 @@ bool WLEDClient_fetchWledState(TDoc& doc) {
   if (doc.isNull() || doc.size() == 0) {
     Serial.println("[JSON] Document is null or empty after successful parse");
     doc.clear();
+    WLEDClient_httpInUse = false;  // LWIP FIX: Release lock on failure
     WLEDClient_backoff();
     return false;
   }
@@ -411,6 +431,7 @@ bool WLEDClient_fetchWledState(TDoc& doc) {
     Serial.printf("[HTTP] Memory usage: %d bytes\n", heapBefore - heapAfter);
   }
 
+  WLEDClient_httpInUse = false;  // LWIP FIX: Release lock on success
   WLEDClient_resetBackoff();
   return true;
 }
@@ -588,6 +609,464 @@ bool WLEDClient_sendBrightness(uint8_t bri) {
 // MEMORY SAFE: Presets → Quick-Load mapping with fixed buffers
 // ─────────────────────────────────────────────────────────────
 
+// Fetch effects list from WLED /json/effects endpoint
+bool WLEDClient_fetchEffectName(int effectId, char* buffer, size_t bufferSize) {
+  if (effectId < 0 || !buffer || bufferSize == 0) return false;
+  
+  if (!WiFiManager_isConnected() || !WLEDClient_guard()) {
+    Serial.printf("[EFFECTS] Cannot fetch - WiFi=%d, guard=%d\n", WiFiManager_isConnected(), WLEDClient_guard());
+    return false;
+  }
+  
+  if (!WLEDClient_initHTTP()) {
+    Serial.println("[EFFECTS] HTTP init failed");
+    WLEDClient_backoff();
+    return false;
+  }
+  
+  snprintf(WLEDClient_urlBuffer, URL_BUFFER_SIZE, "http://%s/json/effects", WLED_IP);
+  Serial.printf("[EFFECTS] Fetching from: %s\n", WLEDClient_urlBuffer);
+  
+  if (!WLEDClient_http.begin(WLEDClient_wifiClient, WLEDClient_urlBuffer)) {
+    Serial.printf("[HTTP][EFFECTS] begin() failed: %s\n", WLEDClient_urlBuffer);
+    WLEDClient_backoff();
+    return false;
+  }
+  
+  // Use shorter timeout for effects endpoint
+  WLEDClient_http.setTimeout(2000);
+  int httpCode = WLEDClient_http.GET();
+  
+  Serial.printf("[EFFECTS] HTTP GET result: %d\n", httpCode);
+  
+  if (httpCode != HTTP_CODE_OK) {
+    Serial.printf("[HTTP][EFFECTS] GET failed: %d\n", httpCode);
+    WLEDClient_http.end();
+    delay(50);
+    WLEDClient_backoff();
+    return false;
+  }
+  
+  String responsePayload = WLEDClient_http.getString();
+  WLEDClient_http.end();
+  delay(50);
+  
+  Serial.printf("[EFFECTS] Response length: %d\n", responsePayload.length());
+  Serial.printf("[EFFECTS] Response preview: %s\n", responsePayload.substring(0, 100).c_str());
+  
+  JsonDocument doc;
+  DeserializationError error = deserializeJson(doc, responsePayload);
+  
+  if (error) {
+    Serial.printf("[EFFECTS] JSON parse error: %s\n", error.c_str());
+    WLEDClient_backoff();
+    return false;
+  }
+  
+  Serial.printf("[EFFECTS] JSON array size: %d, looking for index %d\n", doc.size(), effectId);
+  
+  if (doc.is<JsonArray>() && effectId >= 0 && effectId < doc.size()) {
+    const char* effectName = doc[effectId];
+    if (effectName && strlen(effectName) > 0) {
+      strncpy(buffer, effectName, bufferSize - 1);
+      buffer[bufferSize - 1] = '\0';
+      Serial.printf("[EFFECTS] Found effect %d: %s\n", effectId, buffer);
+      WLEDClient_resetBackoff();
+      return true;
+    } else {
+      Serial.printf("[EFFECTS] Effect %d name is null or empty\n", effectId);
+    }
+  } else {
+    Serial.printf("[EFFECTS] Effect %d not found - array size: %d, is_array: %d\n", 
+                  effectId, doc.size(), doc.is<JsonArray>());
+  }
+  
+  return false;
+}
+
+// Fetch palette color data from WLED /json/palx endpoint (like PowerShell script and web UI)
+bool WLEDClient_fetchPaletteColors(int paletteId, PaletteColorData* colors, int maxColors) {
+  if (paletteId < 0 || !colors || maxColors <= 0) return false;
+  
+  if (!WiFiManager_isConnected() || !WLEDClient_guard()) {
+    Serial.printf("[PALETTE_COLORS] Cannot fetch - WiFi=%d, guard=%d\n", WiFiManager_isConnected(), WLEDClient_guard());
+    return false;
+  }
+  
+  if (!WLEDClient_initHTTP()) {
+    Serial.println("[PALETTE_COLORS] HTTP init failed");
+    WLEDClient_backoff();
+    return false;
+  }
+  
+  // Calculate which page this palette is on (8 palettes per page on ESP32)
+  int page = paletteId / 8;
+  
+  snprintf(WLEDClient_urlBuffer, URL_BUFFER_SIZE, "http://%s/json/palx?page=%d", WLED_IP, page);
+  Serial.printf("[PALETTE_COLORS] Fetching page %d from: %s\n", page, WLEDClient_urlBuffer);
+  
+  if (!WLEDClient_http.begin(WLEDClient_wifiClient, WLEDClient_urlBuffer)) {
+    Serial.printf("[HTTP][PALETTE_COLORS] begin() failed: %s\n", WLEDClient_urlBuffer);
+    WLEDClient_backoff();
+    return false;
+  }
+  
+  WLEDClient_http.setTimeout(3000); // Allow time for palette data
+  int httpCode = WLEDClient_http.GET();
+  
+  Serial.printf("[PALETTE_COLORS] HTTP GET result: %d\n", httpCode);
+  
+  if (httpCode != HTTP_CODE_OK) {
+    Serial.printf("[HTTP][PALETTE_COLORS] GET failed: %d\n", httpCode);
+    WLEDClient_http.end();
+    delay(50);
+    WLEDClient_backoff();
+    return false;
+  }
+  
+  String responsePayload = WLEDClient_http.getString();
+  WLEDClient_http.end();
+  delay(50);
+  
+  Serial.printf("[PALETTE_COLORS] Response length: %d\n", responsePayload.length());
+  
+  JsonDocument doc;
+  DeserializationError error = deserializeJson(doc, responsePayload);
+  
+  if (error) {
+    Serial.printf("[PALETTE_COLORS] JSON parse error: %s\n", error.c_str());
+    WLEDClient_backoff();
+    return false;
+  }
+  
+  // Initialize colors array
+  for (int i = 0; i < maxColors; i++) {
+    colors[i].valid = false;
+  }
+  
+  // Look for palette data in response
+  JsonObject paletteData = doc["p"];
+  if (!paletteData) {
+    Serial.println("[PALETTE_COLORS] No palette data 'p' found in response");
+    return false;
+  }
+  
+  char paletteIdStr[8];
+  snprintf(paletteIdStr, sizeof(paletteIdStr), "%d", paletteId);
+  
+  JsonArray paletteArray = paletteData[paletteIdStr];
+  if (!paletteArray) {
+    Serial.printf("[PALETTE_COLORS] No data found for palette %d\n", paletteId);
+    return false;
+  }
+  
+  Serial.printf("[PALETTE_COLORS] Found %d entries for palette %d\n", paletteArray.size(), paletteId);
+  
+  int colorCount = 0;
+  
+  // Process palette entries (can be gradient stops, color references, or random)
+  for (size_t i = 0; i < paletteArray.size() && colorCount < maxColors; i++) {
+    JsonVariant entry = paletteArray[i];
+    
+    if (entry.is<JsonArray>() && entry.size() >= 4) {
+      // Gradient stop format: [position, r, g, b]
+      JsonArray stopData = entry;
+      colors[colorCount].r = constrain((int)stopData[1], 0, 255);
+      colors[colorCount].g = constrain((int)stopData[2], 0, 255);
+      colors[colorCount].b = constrain((int)stopData[3], 0, 255);
+      colors[colorCount].valid = true;
+      colorCount++;
+      Serial.printf("[PALETTE_COLORS] Gradient stop %d: R=%d G=%d B=%d\n", 
+                    colorCount-1, colors[colorCount-1].r, colors[colorCount-1].g, colors[colorCount-1].b);
+    } else if (entry.is<const char*>()) {
+      String entryStr = entry.as<String>();
+      if (entryStr == "r") {
+        // Random color - generate one
+        colors[colorCount].r = random(256);
+        colors[colorCount].g = random(256);
+        colors[colorCount].b = random(256);
+        colors[colorCount].valid = true;
+        colorCount++;
+        Serial.printf("[PALETTE_COLORS] Random color %d: R=%d G=%d B=%d\n", 
+                      colorCount-1, colors[colorCount-1].r, colors[colorCount-1].g, colors[colorCount-1].b);
+      } else if (entryStr.startsWith("c")) {
+        // Color reference - we'll handle this differently since we need segment data
+        // For now, generate a placeholder color
+        colors[colorCount].r = 128;
+        colors[colorCount].g = 128;
+        colors[colorCount].b = 128;
+        colors[colorCount].valid = true;
+        colorCount++;
+        Serial.printf("[PALETTE_COLORS] Color reference %d (placeholder)\n", colorCount-1);
+      }
+    }
+  }
+  
+  Serial.printf("[PALETTE_COLORS] Successfully processed %d colors for palette %d\n", colorCount, paletteId);
+  WLEDClient_resetBackoff();
+  return colorCount > 0;
+}
+
+// Fetch palettes list from WLED /json/palettes endpoint  
+bool WLEDClient_fetchPaletteName(int paletteId, char* buffer, size_t bufferSize) {
+  if (paletteId < 0 || !buffer || bufferSize == 0) return false;
+  
+  if (!WiFiManager_isConnected() || !WLEDClient_guard()) {
+    Serial.printf("[PALETTES] Cannot fetch - WiFi=%d, guard=%d\n", WiFiManager_isConnected(), WLEDClient_guard());
+    return false;
+  }
+  
+  if (!WLEDClient_initHTTP()) {
+    Serial.println("[PALETTES] HTTP init failed");
+    WLEDClient_backoff();
+    return false;
+  }
+  
+  snprintf(WLEDClient_urlBuffer, URL_BUFFER_SIZE, "http://%s/json/palettes", WLED_IP);
+  Serial.printf("[PALETTES] Fetching from: %s\n", WLEDClient_urlBuffer);
+  
+  if (!WLEDClient_http.begin(WLEDClient_wifiClient, WLEDClient_urlBuffer)) {
+    Serial.printf("[HTTP][PALETTES] begin() failed: %s\n", WLEDClient_urlBuffer);
+    WLEDClient_backoff();
+    return false;
+  }
+  
+  // Use shorter timeout for palettes endpoint
+  WLEDClient_http.setTimeout(2000);
+  int httpCode = WLEDClient_http.GET();
+  
+  Serial.printf("[PALETTES] HTTP GET result: %d\n", httpCode);
+  
+  if (httpCode != HTTP_CODE_OK) {
+    Serial.printf("[HTTP][PALETTES] GET failed: %d\n", httpCode);
+    WLEDClient_http.end();
+    delay(50);
+    WLEDClient_backoff();
+    return false;
+  }
+  
+  String responsePayload = WLEDClient_http.getString();
+  WLEDClient_http.end();
+  delay(50);
+  
+  Serial.printf("[PALETTES] Response length: %d\n", responsePayload.length());
+  Serial.printf("[PALETTES] Response preview: %s\n", responsePayload.substring(0, 100).c_str());
+  
+  JsonDocument doc;
+  DeserializationError error = deserializeJson(doc, responsePayload);
+  
+  if (error) {
+    Serial.printf("[PALETTES] JSON parse error: %s\n", error.c_str());
+    WLEDClient_backoff();
+    return false;
+  }
+  
+  Serial.printf("[PALETTES] JSON array size: %d, looking for index %d\n", doc.size(), paletteId);
+  
+  if (doc.is<JsonArray>() && paletteId >= 0 && paletteId < doc.size()) {
+    const char* paletteName = doc[paletteId];
+    if (paletteName && strlen(paletteName) > 0) {
+      strncpy(buffer, paletteName, bufferSize - 1);
+      buffer[bufferSize - 1] = '\0';
+      Serial.printf("[PALETTES] Found palette %d: %s\n", paletteId, buffer);
+      WLEDClient_resetBackoff();
+      return true;
+    } else {
+      Serial.printf("[PALETTES] Palette %d name is null or empty\n", paletteId);
+    }
+  } else {
+    Serial.printf("[PALETTES] Palette %d not found - array size: %d, is_array: %d\n", 
+                  paletteId, doc.size(), doc.is<JsonArray>());
+  }
+  
+  return false;
+}
+
+// Fetch preset name from WLED presets.json endpoint
+bool WLEDClient_fetchPresetName(int presetId, char* buffer, size_t bufferSize) {
+  if (presetId <= 0 || !buffer || bufferSize == 0) return false;
+  
+  if (!WiFiManager_isConnected() || !WLEDClient_guard()) {
+    Serial.printf("[PRESETS] Cannot fetch - WiFi=%d, guard=%d\n", WiFiManager_isConnected(), WLEDClient_guard());
+    return false;
+  }
+  
+  if (!WLEDClient_initHTTP()) {
+    Serial.println("[PRESETS] HTTP init failed");
+    WLEDClient_backoff();
+    return false;
+  }
+  
+  snprintf(WLEDClient_urlBuffer, URL_BUFFER_SIZE, "http://%s/presets.json", WLED_IP);
+  Serial.printf("[PRESETS] Fetching from: %s\n", WLEDClient_urlBuffer);
+  
+  if (!WLEDClient_http.begin(WLEDClient_wifiClient, WLEDClient_urlBuffer)) {
+    Serial.printf("[HTTP][PRESETS] begin() failed: %s\n", WLEDClient_urlBuffer);
+    WLEDClient_backoff();
+    return false;
+  }
+  
+  // Use longer timeout for presets as they can be large
+  WLEDClient_http.setTimeout(3000);
+  int httpCode = WLEDClient_http.GET();
+  
+  Serial.printf("[PRESETS] HTTP GET result: %d\n", httpCode);
+  
+  if (httpCode != HTTP_CODE_OK) {
+    Serial.printf("[HTTP][PRESETS] GET failed: %d\n", httpCode);
+    WLEDClient_http.end();
+    delay(50);
+    WLEDClient_backoff();
+    return false;
+  }
+  
+  String responsePayload = WLEDClient_http.getString();
+  WLEDClient_http.end();
+  delay(50);
+  
+  Serial.printf("[PRESETS] Response length: %d\n", responsePayload.length());
+  
+  JsonDocument doc;
+  DeserializationError error = deserializeJson(doc, responsePayload);
+  
+  if (error) {
+    Serial.printf("[PRESETS] JSON parse error: %s\n", error.c_str());
+    WLEDClient_backoff();
+    return false;
+  }
+  
+  // Look for preset by ID
+  char presetKey[8];
+  snprintf(presetKey, sizeof(presetKey), "%d", presetId);
+  
+  Serial.printf("[PRESETS] Looking for preset key '%s'\n", presetKey);
+  
+  if (doc.containsKey(presetKey)) {
+    JsonObject preset = doc[presetKey];
+    if (preset.containsKey("n")) {
+      const char* presetName = preset["n"];
+      if (presetName && strlen(presetName) > 0) {
+        strncpy(buffer, presetName, bufferSize - 1);
+        buffer[bufferSize - 1] = '\0';
+        Serial.printf("[PRESETS] Found preset %d: %s\n", presetId, buffer);
+        WLEDClient_resetBackoff();
+        return true;
+      } else {
+        Serial.printf("[PRESETS] Preset %d name is null or empty\n", presetId);
+      }
+    } else {
+      Serial.printf("[PRESETS] Preset %d has no 'n' field\n", presetId);
+    }
+  } else {
+    Serial.printf("[PRESETS] Preset key '%s' not found in document\n", presetKey);
+  }
+  
+  return false;
+}
+
+// Detect if current preset is part of a playlist
+bool WLEDClient_detectPlaylist(int currentPresetId, char* playlistNameBuffer, size_t bufferSize, int* playlistId) {
+  if (currentPresetId <= 0 || !playlistNameBuffer || bufferSize == 0) return false;
+  
+  if (!WiFiManager_isConnected() || !WLEDClient_guard()) {
+    Serial.printf("[PLAYLIST] Cannot fetch - WiFi=%d, guard=%d\n", WiFiManager_isConnected(), WLEDClient_guard());
+    return false;
+  }
+  
+  if (!WLEDClient_initHTTP()) {
+    Serial.println("[PLAYLIST] HTTP init failed");
+    WLEDClient_backoff();
+    return false;
+  }
+  
+  snprintf(WLEDClient_urlBuffer, URL_BUFFER_SIZE, "http://%s/presets.json", WLED_IP);
+  Serial.printf("[PLAYLIST] Fetching from: %s\n", WLEDClient_urlBuffer);
+  
+  if (!WLEDClient_http.begin(WLEDClient_wifiClient, WLEDClient_urlBuffer)) {
+    Serial.printf("[HTTP][PLAYLIST] begin() failed: %s\n", WLEDClient_urlBuffer);
+    WLEDClient_backoff();
+    return false;
+  }
+  
+  WLEDClient_http.setTimeout(3000);
+  int httpCode = WLEDClient_http.GET();
+  
+  Serial.printf("[PLAYLIST] HTTP GET result: %d\n", httpCode);
+  
+  if (httpCode != HTTP_CODE_OK) {
+    Serial.printf("[HTTP][PLAYLIST] GET failed: %d\n", httpCode);
+    WLEDClient_http.end();
+    delay(50);
+    WLEDClient_backoff();
+    return false;
+  }
+  
+  String responsePayload = WLEDClient_http.getString();
+  WLEDClient_http.end();
+  delay(50);
+  
+  Serial.printf("[PLAYLIST] Response length: %d\n", responsePayload.length());
+  
+  JsonDocument doc;
+  DeserializationError error = deserializeJson(doc, responsePayload);
+  
+  if (error) {
+    Serial.printf("[PLAYLIST] JSON parse error: %s\n", error.c_str());
+    WLEDClient_backoff();
+    return false;
+  }
+  
+  Serial.printf("[PLAYLIST] Searching for preset %d in playlists\n", currentPresetId);
+  
+  // Search through all presets for playlists (matching PowerShell logic)
+  for (JsonPair p : doc.as<JsonObject>()) {
+    JsonObject preset = p.value();
+    if (!preset) continue;
+    
+    // Check if this preset has a playlist
+    if (preset.containsKey("playlist")) {
+      JsonObject playlist = preset["playlist"];
+      if (playlist && playlist.containsKey("ps")) {
+        JsonArray playlistPresets = playlist["ps"];
+        if (playlistPresets) {
+          Serial.printf("[PLAYLIST] Checking playlist %s with %d presets\n", p.key().c_str(), playlistPresets.size());
+          
+          // Check if our current preset is in this playlist
+          for (JsonVariant presetVar : playlistPresets) {
+            int presetInPlaylist = presetVar.as<int>();
+            if (presetInPlaylist == currentPresetId) {
+              // Found our preset in this playlist
+              const char* name = preset["n"];
+              if (name && strlen(name) > 0) {
+                strncpy(playlistNameBuffer, name, bufferSize - 1);
+                playlistNameBuffer[bufferSize - 1] = '\0';
+                
+                if (playlistId) {
+                  *playlistId = atoi(p.key().c_str());
+                }
+                
+                Serial.printf("[PLAYLIST] Found preset %d in playlist: %s (ID %s)\n", 
+                             currentPresetId, name, p.key().c_str());
+                WLEDClient_resetBackoff();
+                return true;
+              } else {
+                Serial.printf("[PLAYLIST] Found preset %d in playlist %s but no name\n", currentPresetId, p.key().c_str());
+              }
+            }
+          }
+        } else {
+          Serial.printf("[PLAYLIST] Playlist %s has no 'ps' array\n", p.key().c_str());
+        }
+      } else {
+        Serial.printf("[PLAYLIST] Playlist %s has no 'playlist' object or missing 'ps'\n", p.key().c_str());
+      }
+    }
+  }
+  
+  Serial.printf("[PLAYLIST] Preset %d not found in any playlist\n", currentPresetId);
+  return false;
+}
+
 bool WLEDClient_parseWLEDPresets() {
   if (!WiFiManager_isConnected()) {
     Serial.println("[WLED] parse presets: WiFi down");
@@ -618,36 +1097,24 @@ bool WLEDClient_parseWLEDPresets() {
   }
 
   // MEMORY SAFE: Stream directly to avoid String allocation
-  WiFiClient* stream = WLEDClient_http.getStreamPtr();
+  // LWIP CRASH FIX: Use String buffer instead of stream to avoid pbuf reference issues
+  String responsePayload = WLEDClient_http.getString();
   
-  // Safety check for null pointer
-  if (!stream) {
-    Serial.println("[JSON] ERROR: getStreamPtr() returned null (presets)");
-    WLEDClient_http.end();
-    WLEDClient_backoff();
-    return false;
-  }
+  // Always cleanup socket BEFORE processing data 
+  WLEDClient_http.end();
   
-  // Additional safety check: verify stream is connected and has data
-  if (!stream->connected()) {
-    Serial.println("[JSON] ERROR: Stream not connected (presets)");
-    WLEDClient_http.end();
-    WLEDClient_backoff();
-    return false;
-  }
-  
-  // Check if stream has available data before dereferencing
-  if (!stream->available()) {
-    Serial.println("[JSON] WARNING: No data available in stream (presets)");
-    WLEDClient_http.end();
+  // Validate response payload
+  if (responsePayload.length() == 0) {
+    Serial.println("[JSON] ERROR: Empty presets response payload");
     WLEDClient_backoff();
     return false;
   }
   
   JsonDocument doc; // MEMORY SAFE: Fixed size for presets
-  DeserializationError e = deserializeJson(doc, *stream);
+  DeserializationError e = deserializeJson(doc, responsePayload);
   
-  WLEDClient_http.end(); // Simple cleanup
+  // Clear response payload immediately after parsing
+  responsePayload = String();
 
   if (e) {
     Serial.printf("[JSON] presets parse error: %s\n", e.c_str());
@@ -1101,4 +1568,15 @@ void WLEDClient_fetchFriendlyNames() {
   }
   
   Serial.println("[WLED] Friendly name fetching complete");
+}
+
+// Public function to force reset backoff state - useful for manual refresh
+void WLEDClient_forceResetBackoff() {
+  WLEDClient_resetBackoff();
+}
+
+// Public function to force reset HTTP client state - fixes stuck "busy" state
+void WLEDClient_forceResetHTTPState() {
+  Serial.println("[WLED] Force resetting HTTP client state");
+  WLEDClient_safeHTTPCleanup();
 }

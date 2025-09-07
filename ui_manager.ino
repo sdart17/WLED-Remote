@@ -594,16 +594,26 @@ void UIManager_getPlaylistText(JsonDocument& doc, bool dataAvailable, char* buff
   
   JsonObject state = doc["state"];
   if (!state.isNull()) {
-    JsonObject playlist = state["pl"];
-    if (!playlist.isNull() && playlist.containsKey("id")) {
-      int playlistId = playlist["id"] | -1;
-      if (playlistId >= 0) {
-        const char* playlistName = playlist["name"] | nullptr;
-        if (playlistName && strlen(playlistName) > 0) {
-          snprintf(buffer, bufferSize, "PL %d: %s", playlistId, playlistName);
-        } else {
-          snprintf(buffer, bufferSize, "Playlist %d", playlistId);
-        }
+    // Check for playlist ID in state.pl (WLED v0.14+ structure)
+    int playlistId = state["pl"] | -1;
+    if (playlistId > 0) {
+      // Try to get playlist name from presets.json
+      char playlistName[32];
+      if (UIManager_getActualPresetName(playlistId, playlistName, sizeof(playlistName))) {
+        snprintf(buffer, bufferSize, "%s", playlistName);
+      } else {
+        snprintf(buffer, bufferSize, "Playlist %d", playlistId);
+      }
+      return;
+    }
+    
+    // Fallback: check if current preset is part of a playlist
+    int currentPresetId = state["ps"] | -1;
+    if (currentPresetId > 0) {
+      char playlistNameBuf[32];
+      int detectedPlaylistId = -1;
+      if (WLEDClient_detectPlaylist(currentPresetId, playlistNameBuf, sizeof(playlistNameBuf), &detectedPlaylistId)) {
+        snprintf(buffer, bufferSize, "%s", playlistNameBuf);
         return;
       }
     }
@@ -625,7 +635,7 @@ void UIManager_getPresetText(JsonDocument& doc, bool dataAvailable, char* buffer
       // Try to get actual preset name
       char presetName[32];
       if (UIManager_getActualPresetName(presetId, presetName, sizeof(presetName))) {
-        snprintf(buffer, bufferSize, "PR %d: %s", presetId, presetName);
+        snprintf(buffer, bufferSize, "%s", presetName);
       } else {
         snprintf(buffer, bufferSize, "Preset %d", presetId);
       }
@@ -650,9 +660,9 @@ void UIManager_getEffectText(JsonDocument& doc, bool dataAvailable, char* buffer
       if (!seg.isNull()) {
         int effectId = seg["fx"] | -1;
         if (effectId >= 0) {
-          const char* effectName = UIManager_getEffectName(effectId);
-          if (effectName && strlen(effectName) > 0) {
-            snprintf(buffer, bufferSize, "FX %d: %s", effectId, effectName);
+          char effectName[32];
+          if (WLEDClient_fetchEffectName(effectId, effectName, sizeof(effectName))) {
+            snprintf(buffer, bufferSize, "%s", effectName);
           } else {
             snprintf(buffer, bufferSize, "Effect %d", effectId);
           }
@@ -775,9 +785,9 @@ void UIManager_getPaletteInfo(JsonDocument& doc, char* nameBuffer, size_t nameBu
       if (!seg.isNull()) {
         *paletteId = seg["pal"] | -1;
         if (*paletteId >= 0) {
-          const char* palName = UIManager_getPaletteName(*paletteId);
-          if (palName && strlen(palName) > 0) {
-            snprintf(nameBuffer, nameBufferSize, "%s", palName);
+          char paletteName[32];
+          if (WLEDClient_fetchPaletteName(*paletteId, paletteName, sizeof(paletteName))) {
+            snprintf(nameBuffer, nameBufferSize, "%s", paletteName);
           } else {
             snprintf(nameBuffer, nameBufferSize, "Palette %d", *paletteId);
           }
@@ -791,13 +801,37 @@ void UIManager_getPaletteInfo(JsonDocument& doc, char* nameBuffer, size_t nameBu
 void UIManager_drawPaletteSwatches(int startX, int startY, int paletteId) {
   auto& tft = DisplayManager_getTFT();
   
-  // For now, show default color swatches as placeholder
-  // TODO: Implement actual palette color fetching from WLED
-  uint16_t paletteColors[8] = {
-    ST77XX_RED, ST77XX_GREEN, ST77XX_BLUE, ST77XX_YELLOW,
-    ST77XX_MAGENTA, ST77XX_CYAN, ST77XX_WHITE, 0xF800  // Orange
-  };
-  int colorCount = 8;
+  // Get actual palette colors from WLED
+  PaletteColorData paletteColorData[8];
+  uint16_t paletteColors[8];
+  int colorCount = 0;
+  
+  if (paletteId >= 0 && WLEDClient_fetchPaletteColors(paletteId, paletteColorData, 8)) {
+    // Convert PaletteColorData to RGB565 colors
+    for (int i = 0; i < 8; i++) {
+      if (paletteColorData[i].valid) {
+        // Convert RGB888 to RGB565
+        uint16_t r5 = (paletteColorData[i].r >> 3) & 0x1F;
+        uint16_t g6 = (paletteColorData[i].g >> 2) & 0x3F;  
+        uint16_t b5 = (paletteColorData[i].b >> 3) & 0x1F;
+        paletteColors[colorCount] = (r5 << 11) | (g6 << 5) | b5;
+        colorCount++;
+      }
+    }
+  }
+  
+  // Fallback to default colors if no palette data
+  if (colorCount == 0) {
+    paletteColors[0] = ST77XX_RED;
+    paletteColors[1] = ST77XX_GREEN;
+    paletteColors[2] = ST77XX_BLUE;
+    paletteColors[3] = ST77XX_YELLOW;
+    paletteColors[4] = ST77XX_MAGENTA;
+    paletteColors[5] = ST77XX_CYAN;
+    paletteColors[6] = ST77XX_WHITE;
+    paletteColors[7] = 0xF800; // Orange
+    colorCount = 8;
+  }
   
   // Draw color squares
   const int squareSize = 18;

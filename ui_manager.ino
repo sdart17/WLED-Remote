@@ -62,12 +62,7 @@ static const uint32_t BUTTON_PRESS_FEEDBACK_MS = 150;
 #define ACTION_QUICK_LAUNCH_5    205  // Bright White (QL5)
 #define ACTION_QUICK_LAUNCH_6    206  // Music (QL6)
 
-// Dropdown state for instance selection
-typedef struct {
-  int16_t x, y, w, h;
-} DropdownBounds;
-static DropdownBounds UIManager_dropdownBounds = {0, 0, 0, 0};
-static bool UIManager_dropdownExpanded = false;
+// Combo box layout replaces the old dropdown system
 
 // Page 0 buttons - ENHANCED: All 6 buttons now use quick launch mappings  
 static IconBtn UIManager_page0Buttons[] = {
@@ -513,7 +508,7 @@ const char* UIManager_getPaletteName(int paletteId) {
   }
 }
 
-// Enhanced Now Playing Page with Instance Dropdown - Display comprehensive WLED state information
+// Now Playing Page - All Combo Boxes Layout
 void UIManager_drawNowPlayingPage() {
   // CRASH FIX: Verify display is ready before using TFT
   if (!DisplayManager_isScreenOn()) {
@@ -526,57 +521,299 @@ void UIManager_drawNowPlayingPage() {
   // Clear the page area first
   tft.fillRect(0, 20, 240, 300, ST77XX_BLACK);
   
-  // Draw instance dropdown at top instead of "Now Playing" header
-  UIManager_drawInstanceDropdown();
-  
-  // Prepare to fetch WLED state - use explicit size for reliability
+  // Prepare to fetch WLED state for combo box content
   JsonDocument doc;
-  
-  // Debug: Show current WLED IP being used and memory status
   const char* currentIP = getWLEDIP();
-  Serial.printf("[UI] Now Playing: Fetching state from WLED IP: %s (instance %d)\n", 
-                currentIP, CURRENT_WLED_INSTANCE);
-  Serial.printf("[UI] WiFi connected: %s\n", WiFiManager_isConnected() ? "YES" : "NO");
-  Serial.printf("[UI] Free heap: %d bytes\n", ESP.getFreeHeap());
-  
-  // Add a small loading indicator on screen during fetch
-  tft.setTextSize(1);
-  tft.setTextColor(ST77XX_YELLOW, ST77XX_BLACK);
-  tft.setCursor(10, 60);
-  tft.print("Loading...");
-  
   bool dataAvailable = WLEDClient_fetchWledState(doc);
-  Serial.printf("[UI] WLED state fetch result: %s (heap after: %d bytes)\n", 
-                dataAvailable ? "SUCCESS" : "FAILED", ESP.getFreeHeap());
   
-  if (dataAvailable) {
-    UIManager_drawEnhancedWLEDStateInfo(doc);
+  Serial.printf("[UI] Now Playing combo boxes: WLED state %s for IP %s\n", 
+                dataAvailable ? "available" : "unavailable", currentIP);
+  
+  // Calculate combo box dimensions - 5 combo boxes, last one double height
+  const int margin = 10;
+  const int comboWidth = 220;
+  const int normalHeight = 40;
+  const int doubleHeight = 70;
+  const int spacing = 8;
+  const int availableHeight = 260; // 320 - 20 (top margin) - 40 (bottom margin)
+  
+  int y = 30; // Start position
+  
+  // 1. Instance Dropdown (existing functionality)
+  UIManager_drawComboBox(margin, y, comboWidth, normalHeight, "Instance", 
+                         UIManager_getInstanceDisplayText(), dataAvailable);
+  y += normalHeight + spacing;
+  
+  // 2. Playlist Combo Box
+  char playlistText[32];
+  UIManager_getPlaylistText(doc, dataAvailable, playlistText, sizeof(playlistText));
+  UIManager_drawComboBox(margin, y, comboWidth, normalHeight, "Playlist", 
+                         playlistText, dataAvailable);
+  y += normalHeight + spacing;
+  
+  // 3. Preset Combo Box
+  char presetText[32];
+  UIManager_getPresetText(doc, dataAvailable, presetText, sizeof(presetText));
+  UIManager_drawComboBox(margin, y, comboWidth, normalHeight, "Preset", 
+                         presetText, dataAvailable);
+  y += normalHeight + spacing;
+  
+  // 4. Effect Combo Box
+  char effectText[32];
+  UIManager_getEffectText(doc, dataAvailable, effectText, sizeof(effectText));
+  UIManager_drawComboBox(margin, y, comboWidth, normalHeight, "Effect", 
+                         effectText, dataAvailable);
+  y += normalHeight + spacing;
+  
+  // 5. Palette Combo Box (double height with swatches)
+  UIManager_drawPaletteComboBox(margin, y, comboWidth, doubleHeight, doc, dataAvailable);
+}
+
+// Helper function to get instance display text
+const char* UIManager_getInstanceDisplayText() {
+  const char* currentName = safeGetWLEDName(CURRENT_WLED_INSTANCE);
+  const char* currentIP = safeGetWLEDIP(CURRENT_WLED_INSTANCE);
+  
+  static char displayText[40];
+  if (currentName && currentIP && strcmp(currentName, currentIP) != 0) {
+    snprintf(displayText, sizeof(displayText), "%s", currentName);
+  } else if (currentIP) {
+    snprintf(displayText, sizeof(displayText), "%s", currentIP);
   } else {
-    // Show error message with detailed debugging info
-    tft.fillRect(10, 60, 220, 180, ST77XX_BLACK); // Clear the area first
-    tft.setTextSize(1);
-    tft.setTextColor(ST77XX_RED, ST77XX_BLACK);
-    tft.setCursor(10, 60);
-    tft.print("Cannot connect to WLED");
-    tft.setCursor(10, 75);
-    tft.printf("IP: %s", currentIP);
-    tft.setCursor(10, 90);
-    tft.printf("WiFi: %s", WiFiManager_isConnected() ? "Connected" : "Disconnected");
-    tft.setCursor(10, 105);
-    tft.printf("Instance: %d/%d", CURRENT_WLED_INSTANCE + 1, WLED_INSTANCE_COUNT);
-    tft.setCursor(10, 120);
-    tft.printf("Heap: %d bytes", ESP.getFreeHeap());
+    snprintf(displayText, sizeof(displayText), "Unknown");
+  }
+  return displayText;
+}
+
+// Extract playlist information from WLED state
+void UIManager_getPlaylistText(JsonDocument& doc, bool dataAvailable, char* buffer, size_t bufferSize) {
+  if (!dataAvailable || !buffer || bufferSize == 0) {
+    snprintf(buffer, bufferSize, "No data");
+    return;
+  }
+  
+  JsonObject state = doc["state"];
+  if (!state.isNull()) {
+    JsonObject playlist = state["pl"];
+    if (!playlist.isNull() && playlist.containsKey("id")) {
+      int playlistId = playlist["id"] | -1;
+      if (playlistId >= 0) {
+        const char* playlistName = playlist["name"] | nullptr;
+        if (playlistName && strlen(playlistName) > 0) {
+          snprintf(buffer, bufferSize, "PL %d: %s", playlistId, playlistName);
+        } else {
+          snprintf(buffer, bufferSize, "Playlist %d", playlistId);
+        }
+        return;
+      }
+    }
+  }
+  snprintf(buffer, bufferSize, "No active playlist");
+}
+
+// Extract preset information from WLED state
+void UIManager_getPresetText(JsonDocument& doc, bool dataAvailable, char* buffer, size_t bufferSize) {
+  if (!dataAvailable || !buffer || bufferSize == 0) {
+    snprintf(buffer, bufferSize, "No data");
+    return;
+  }
+  
+  JsonObject state = doc["state"];
+  if (!state.isNull()) {
+    int presetId = state["ps"] | -1;
+    if (presetId > 0) {
+      // Try to get actual preset name
+      char presetName[32];
+      if (UIManager_getActualPresetName(presetId, presetName, sizeof(presetName))) {
+        snprintf(buffer, bufferSize, "PR %d: %s", presetId, presetName);
+      } else {
+        snprintf(buffer, bufferSize, "Preset %d", presetId);
+      }
+      return;
+    }
+  }
+  snprintf(buffer, bufferSize, "No active preset");
+}
+
+// Extract effect information from WLED state
+void UIManager_getEffectText(JsonDocument& doc, bool dataAvailable, char* buffer, size_t bufferSize) {
+  if (!dataAvailable || !buffer || bufferSize == 0) {
+    snprintf(buffer, bufferSize, "No data");
+    return;
+  }
+  
+  JsonObject state = doc["state"];
+  if (!state.isNull()) {
+    JsonArray segs = state["seg"];
+    if (!segs.isNull() && segs.size() > 0) {
+      JsonObject seg = segs[0]; // Main segment
+      if (!seg.isNull()) {
+        int effectId = seg["fx"] | -1;
+        if (effectId >= 0) {
+          const char* effectName = UIManager_getEffectName(effectId);
+          if (effectName && strlen(effectName) > 0) {
+            snprintf(buffer, bufferSize, "FX %d: %s", effectId, effectName);
+          } else {
+            snprintf(buffer, bufferSize, "Effect %d", effectId);
+          }
+          return;
+        }
+      }
+    }
+  }
+  snprintf(buffer, bufferSize, "No effect");
+}
+
+// Draw a standard combo box
+void UIManager_drawComboBox(int x, int y, int w, int h, const char* label, const char* value, bool enabled) {
+  auto& tft = DisplayManager_getTFT();
+  
+  // Draw border
+  uint16_t borderColor = enabled ? ST77XX_WHITE : 0x8410; // Gray color (RGB565)
+  tft.drawRect(x, y, w, h, borderColor);
+  
+  // Draw background
+  tft.fillRect(x + 1, y + 1, w - 2, h - 2, ST77XX_BLACK);
+  
+  // Draw label (smaller, top-left)
+  tft.setTextSize(1);
+  tft.setTextColor(ST77XX_CYAN, ST77XX_BLACK);
+  tft.setCursor(x + 5, y + 5);
+  tft.print(label);
+  
+  // Draw value (larger, center)
+  tft.setTextSize(2);
+  uint16_t valueColor = enabled ? ST77XX_WHITE : 0x8410; // Gray color (RGB565)
+  tft.setTextColor(valueColor, ST77XX_BLACK);
+  
+  // Calculate center position
+  int textY = y + h/2 - 4; // Adjust for text height
+  tft.setCursor(x + 8, textY);
+  
+  // Truncate text if too long
+  char truncatedValue[20];
+  if (strlen(value) > 18) {
+    strncpy(truncatedValue, value, 15);
+    strncpy(truncatedValue + 15, "...", 4);
+    tft.print(truncatedValue);
+  } else {
+    tft.print(value);
+  }
+  
+  // Draw dropdown arrow
+  tft.setTextSize(1);
+  tft.setCursor(x + w - 15, y + h/2 - 3);
+  tft.print("v");
+}
+
+// Draw the palette combo box with swatches
+void UIManager_drawPaletteComboBox(int x, int y, int w, int h, JsonDocument& doc, bool dataAvailable) {
+  auto& tft = DisplayManager_getTFT();
+  
+  // Draw border
+  uint16_t borderColor = dataAvailable ? ST77XX_WHITE : 0x8410; // Gray color (RGB565)
+  tft.drawRect(x, y, w, h, borderColor);
+  
+  // Draw background
+  tft.fillRect(x + 1, y + 1, w - 2, h - 2, ST77XX_BLACK);
+  
+  // Draw label
+  tft.setTextSize(1);
+  tft.setTextColor(ST77XX_CYAN, ST77XX_BLACK);
+  tft.setCursor(x + 5, y + 5);
+  tft.print("Palette");
+  
+  if (!dataAvailable) {
+    tft.setTextSize(2);
+    tft.setTextColor(0x8410, ST77XX_BLACK); // Gray color (RGB565)
+    tft.setCursor(x + 8, y + 25);
+    tft.print("No data");
+    return;
+  }
+  
+  // Get palette information
+  char paletteName[24];
+  int paletteId = -1;
+  UIManager_getPaletteInfo(doc, paletteName, sizeof(paletteName), &paletteId);
+  
+  // Draw palette name
+  tft.setTextSize(2);
+  tft.setTextColor(ST77XX_WHITE, ST77XX_BLACK);
+  tft.setCursor(x + 8, y + 20);
+  
+  // Truncate name if too long
+  if (strlen(paletteName) > 15) {
+    char truncated[16];
+    strncpy(truncated, paletteName, 12);
+    strncpy(truncated + 12, "...", 4);
+    tft.print(truncated);
+  } else {
+    tft.print(paletteName);
+  }
+  
+  // Draw palette swatches on second line
+  if (paletteId > 0) {
+    UIManager_drawPaletteSwatches(x + 8, y + 45, paletteId);
+  }
+  
+  // Draw dropdown arrow
+  tft.setTextSize(1);
+  tft.setCursor(x + w - 15, y + 25);
+  tft.print("v");
+}
+
+// Extract palette information from WLED state
+void UIManager_getPaletteInfo(JsonDocument& doc, char* nameBuffer, size_t nameBufferSize, int* paletteId) {
+  *paletteId = -1;
+  snprintf(nameBuffer, nameBufferSize, "No palette");
+  
+  JsonObject state = doc["state"];
+  if (!state.isNull()) {
+    JsonArray segs = state["seg"];
+    if (!segs.isNull() && segs.size() > 0) {
+      JsonObject seg = segs[0]; // Main segment
+      if (!seg.isNull()) {
+        *paletteId = seg["pal"] | -1;
+        if (*paletteId >= 0) {
+          const char* palName = UIManager_getPaletteName(*paletteId);
+          if (palName && strlen(palName) > 0) {
+            snprintf(nameBuffer, nameBufferSize, "%s", palName);
+          } else {
+            snprintf(nameBuffer, nameBufferSize, "Palette %d", *paletteId);
+          }
+        }
+      }
+    }
+  }
+}
+
+// Draw palette color swatches
+void UIManager_drawPaletteSwatches(int startX, int startY, int paletteId) {
+  auto& tft = DisplayManager_getTFT();
+  
+  // For now, show default color swatches as placeholder
+  // TODO: Implement actual palette color fetching from WLED
+  uint16_t paletteColors[8] = {
+    ST77XX_RED, ST77XX_GREEN, ST77XX_BLUE, ST77XX_YELLOW,
+    ST77XX_MAGENTA, ST77XX_CYAN, ST77XX_WHITE, 0xF800  // Orange
+  };
+  int colorCount = 8;
+  
+  // Draw color squares
+  const int squareSize = 18;
+  const int spacing = 2;
+  int xPos = startX;
+  
+  // Limit to fit within combo box width
+  int maxColors = min(colorCount, 10);
+  
+  for (int i = 0; i < maxColors; i++) {
+    tft.fillRect(xPos, startY, squareSize, squareSize, paletteColors[i]);
+    tft.drawRect(xPos, startY, squareSize, squareSize, ST77XX_WHITE);
+    xPos += squareSize + spacing;
     
-    tft.setTextColor(ST77XX_YELLOW, ST77XX_BLACK);
-    tft.setCursor(10, 140);
-    tft.print("Try refresh button below");
-    
-    // BUGFIX: Show refresh button even when connection fails
-    int yPos = 280;
-    tft.setTextColor(ST77XX_WHITE, ST77XX_BLACK);
-    tft.drawRect(80, yPos, 80, 30, ST77XX_WHITE);
-    tft.setCursor(95, yPos + 8);
-    tft.print("Refresh");
+    // Don't exceed combo box width
+    if (xPos + squareSize > startX + 200) break;
   }
 }
 
@@ -852,107 +1089,7 @@ bool UIManager_drawPaletteRepresentativeColors(int paletteId, int startX, int st
   return true;
 }
 
-// Draw instance dropdown at top of now playing page
-void UIManager_drawInstanceDropdown() {
-  auto& tft = DisplayManager_getTFT();
-  
-  // Dropdown configuration
-  const int dropdownX = 10;
-  const int dropdownY = 25;
-  const int dropdownW = 220;
-  const int dropdownH = 25;
-  
-  // Clear dropdown area
-  tft.fillRect(dropdownX, dropdownY, dropdownW, dropdownH, ST77XX_BLACK);
-  
-  // Draw dropdown background
-  tft.fillRect(dropdownX, dropdownY, dropdownW, dropdownH, ST77XX_BLACK);
-  tft.drawRect(dropdownX, dropdownY, dropdownW, dropdownH, ST77XX_WHITE);
-  
-  // Get current instance info
-  const char* currentName = safeGetWLEDName(CURRENT_WLED_INSTANCE);
-  const char* currentIP = safeGetWLEDIP(CURRENT_WLED_INSTANCE);
-  
-  // Format display text (name if different from IP, otherwise just IP)
-  char displayText[40];
-  if (currentName && currentIP && strcmp(currentName, currentIP) != 0) {
-    snprintf(displayText, sizeof(displayText), "%s", currentName);
-  } else if (currentIP) {
-    snprintf(displayText, sizeof(displayText), "%s", currentIP);
-  } else {
-    snprintf(displayText, sizeof(displayText), "Unknown");
-  }
-  
-  // Draw current selection text
-  tft.setTextSize(1);
-  tft.setTextColor(ST77XX_WHITE, ST77XX_BLACK);
-  tft.setCursor(dropdownX + 5, dropdownY + 8);
-  tft.print(displayText);
-  
-  // Draw dropdown arrow (simple ASCII)
-  tft.setCursor(dropdownX + dropdownW - 15, dropdownY + 8);
-  tft.print("v");
-  
-  // Store dropdown bounds for touch detection
-  UIManager_dropdownBounds.x = dropdownX;
-  UIManager_dropdownBounds.y = dropdownY;
-  UIManager_dropdownBounds.w = dropdownW;
-  UIManager_dropdownBounds.h = dropdownH;
-  
-  // If dropdown is expanded, draw the list
-  if (UIManager_dropdownExpanded) {
-    UIManager_drawDropdownList();
-  }
-}
-
-// Draw expanded dropdown list
-void UIManager_drawDropdownList() {
-  auto& tft = DisplayManager_getTFT();
-  
-  const int listX = UIManager_dropdownBounds.x;
-  const int listY = UIManager_dropdownBounds.y + UIManager_dropdownBounds.h;
-  const int listW = UIManager_dropdownBounds.w;
-  const int itemH = 30;
-  const int maxItems = min(WLED_INSTANCE_COUNT, (uint8_t)6); // Max 6 items to fit on screen
-  const int listH = itemH * maxItems;
-  
-  // Draw list background
-  tft.fillRect(listX, listY, listW, listH, ST77XX_BLACK);
-  tft.drawRect(listX, listY, listW, listH, ST77XX_WHITE);
-  
-  // Draw each instance
-  for (uint8_t i = 0; i < maxItems; i++) {
-    const int itemY = listY + (i * itemH);
-    
-    // Highlight current selection
-    bool isSelected = (i == CURRENT_WLED_INSTANCE);
-    uint16_t bgColor = isSelected ? ST77XX_BLUE : ST77XX_BLACK;
-    uint16_t fgColor = isSelected ? ST77XX_WHITE : ST77XX_GREEN;
-    
-    // Draw item background
-    tft.fillRect(listX + 1, itemY + 1, listW - 2, itemH - 2, bgColor);
-    
-    // Get instance info
-    const char* name = safeGetWLEDName(i);
-    const char* ip = safeGetWLEDIP(i);
-    
-    // Format display text
-    char itemText[35];
-    if (name && ip && strcmp(name, ip) != 0) {
-      snprintf(itemText, sizeof(itemText), "%s", name);
-    } else if (ip) {
-      snprintf(itemText, sizeof(itemText), "%s", ip);
-    } else {
-      snprintf(itemText, sizeof(itemText), "Instance %d", i + 1);
-    }
-    
-    // Draw item text
-    tft.setTextSize(1);
-    tft.setTextColor(fgColor, bgColor);
-    tft.setCursor(listX + 5, itemY + 10);
-    tft.print(itemText);
-  }
-}
+// Simplified combo box approach replaces the old dropdown system
 
 // Unified Color Band Renderer - creates consistent full-width color bands
 void UIManager_drawUnifiedColorBand(JsonObject seg, int startX, int startY, int paletteId = 0, int effectId = 0) {
@@ -1091,166 +1228,7 @@ void UIManager_drawColorPalette(JsonObject seg, int startX, int startY, int pale
 }
 
 // Enhanced WLED state information with playlist and color palette support
-void UIManager_drawEnhancedWLEDStateInfo(JsonDocument& doc) {
-  // CRASH FIX: Verify display is ready
-  if (!DisplayManager_isScreenOn()) {
-    Serial.println("[UI] Cannot draw WLED state - screen is off");
-    return;
-  }
-  
-  auto& tft = DisplayManager_getTFT();
-  
-  tft.setTextSize(1);
-  tft.setTextColor(ST77XX_WHITE, ST77XX_BLACK);
-  
-  int yPos = 60;  // Start lower to account for dropdown
-  const int lineHeight = 18;
-  
-  // Skip instance name line since it's now in the dropdown at the top
-  
-  JsonObject state = doc["state"];
-  if (!state || state.isNull()) {
-    tft.setTextColor(ST77XX_RED, ST77XX_BLACK);
-    tft.setCursor(10, yPos);
-    tft.print("No state data available");
-    return;
-  }
-  
-  // Get main segment
-  int mainSeg = state["mainseg"] | 0;
-  JsonArray segments = state["seg"];
-  JsonObject seg;
-  
-  Serial.printf("[WLED] Main segment: %d, Total segments: %d\n", mainSeg, segments ? segments.size() : 0);
-  
-  if (segments && !segments.isNull() && segments.size() > mainSeg) {
-    seg = segments[mainSeg];
-    Serial.printf("[WLED] Using main segment %d\n", mainSeg);
-  } else if (segments && !segments.isNull() && segments.size() > 0) {
-    seg = segments[0];
-    Serial.printf("[WLED] Using first segment (main segment %d not available)\n", mainSeg);
-  } else {
-    Serial.println("[WLED] No segments available");
-  }
-  
-  // Extract IDs - handle playlist ID specially to preserve -1
-  int presetId = state["ps"] | 0;
-  int playlistId = -1;  // Default to -1 (no playlist)  
-  if (!state["pl"].isNull()) {
-    playlistId = state["pl"];
-  }
-  int effectId = seg["fx"] | 0;
-  int paletteId = seg["pal"] | 0;
-  
-  Serial.printf("[DEBUG] Current IDs: preset=%d, playlist=%d, effect=%d, palette=%d\n", 
-                presetId, playlistId, effectId, paletteId);
-  
-  // Line 2: Playlist/Preset information
-  tft.setCursor(10, yPos);
-  tft.setTextColor(ST77XX_YELLOW, ST77XX_BLACK);
-  
-  // Check for playlist first - only if playlist ID > 0 or try to detect from preset
-  char playlistName[32];
-  int detectedPlaylistId = 0;
-  bool hasPlaylist = false;
-  
-  if (playlistId > 0) {
-    // Use provided playlist ID from state
-    hasPlaylist = WLEDClient_fetchPresetName(playlistId, playlistName, sizeof(playlistName));
-    detectedPlaylistId = playlistId;
-    Serial.printf("[PLAYLIST] Using explicit playlist ID %d\n", playlistId);
-  } else if (playlistId == -1 || playlistId == 0) {
-    // Only try to detect playlist from current preset if no explicit playlist ID
-    hasPlaylist = WLEDClient_detectPlaylist(presetId, playlistName, sizeof(playlistName), &detectedPlaylistId);
-    if (hasPlaylist) {
-      Serial.printf("[PLAYLIST] Detected playlist from preset %d\n", presetId);
-    }
-  }
-  
-  // Only show preset/playlist information if we have valid IDs
-  if (hasPlaylist && presetId > 0) {
-    // Get actual preset name
-    char presetName[32];
-    if (!UIManager_getActualPresetName(presetId, presetName, sizeof(presetName))) {
-      snprintf(presetName, sizeof(presetName), "Preset %d", presetId);
-    }
-    
-    tft.printf("%s (%d) | %s (%d)", playlistName, detectedPlaylistId, presetName, presetId);
-  } else if (presetId > 0) {
-    // Just show preset information with actual names and IDs
-    char presetName[32];
-    bool foundInQuickLoads = false;
-    const char* quickLoadName = nullptr;
-    
-    // Check if this preset matches any QuickLoad slot
-    for (uint8_t ql = 0; ql < 6; ql++) {
-      if (WLEDClient_getQuickLoadPreset(ql) == presetId) {
-        switch (ql) {
-          case 0: quickLoadName = "QL1"; break;
-          case 1: quickLoadName = "QL2"; break;
-          case 2: quickLoadName = "QL3"; break;
-          case 3: quickLoadName = "QL4"; break;
-          case 4: quickLoadName = "QL5"; break;
-          case 5: quickLoadName = "QL6"; break;
-        }
-        foundInQuickLoads = true;
-        break;
-      }
-    }
-    
-    if (foundInQuickLoads && quickLoadName) {
-      // For QuickLoad slots, still try to get the actual preset name
-      if (UIManager_getActualPresetName(presetId, presetName, sizeof(presetName))) {
-        tft.printf("%s (%d)", presetName, presetId);
-      } else {
-        tft.printf("%s (%d)", quickLoadName, presetId);
-      }
-    } else {
-      // Try to get actual preset name
-      if (UIManager_getActualPresetName(presetId, presetName, sizeof(presetName))) {
-        tft.printf("%s (%d)", presetName, presetId);
-      } else {
-        tft.printf("Preset %d", presetId);
-      }
-    }
-  } else {
-    // Don't display anything when preset ID is 0 or -1
-    tft.print("(No preset/playlist active)");
-  }
-  yPos += lineHeight;
-  
-  // Line 3: Effect name - get actual name from WLED
-  tft.setCursor(10, yPos);
-  tft.setTextColor(ST77XX_GREEN, ST77XX_BLACK);
-  char effectName[32];
-  if (UIManager_getWLEDEffectName(effectId, effectName, sizeof(effectName))) {
-    tft.print(effectName);
-  } else {
-    tft.printf("Effect %d", effectId);
-  }
-  yPos += lineHeight;
-  
-  // Line 4: Palette name - get actual name from WLED
-  tft.setCursor(10, yPos);
-  tft.setTextColor(ST77XX_MAGENTA, ST77XX_BLACK);
-  char paletteName[32];
-  if (UIManager_getWLEDPaletteName(paletteId, paletteName, sizeof(paletteName))) {
-    tft.print(paletteName);
-  } else {
-    tft.printf("Palette %d", paletteId);
-  }
-  yPos += lineHeight + 5;
-  
-  // Extract and display color palette as colored squares
-  UIManager_drawColorPalette(seg, 10, yPos, paletteId, effectId);
-  
-  // Refresh button at bottom
-  yPos = 280;
-  tft.setTextColor(ST77XX_WHITE, ST77XX_BLACK);
-  tft.drawRect(80, yPos, 80, 30, ST77XX_WHITE);
-  tft.setCursor(95, yPos + 8);
-  tft.print("Refresh");
-}
+// Old enhanced state info function removed - replaced with combo box layout
 
 // Keep the original function for compatibility
 void UIManager_drawWLEDStateInfo(JsonDocument& doc) {
@@ -1367,106 +1345,660 @@ void UIManager_drawWLEDStateInfo(JsonDocument& doc) {
   tft.print("Refresh");
 }
 
-// Handle touch events on Now Playing page
+// Handle touch events on Now Playing page - Combo Box Layout
 void UIManager_handleNowPlayingTouch(int16_t x, int16_t y) {
-  // Check if touch is within dropdown bounds
-  if (x >= UIManager_dropdownBounds.x && 
-      x <= (UIManager_dropdownBounds.x + UIManager_dropdownBounds.w) &&
-      y >= UIManager_dropdownBounds.y && 
-      y <= (UIManager_dropdownBounds.y + UIManager_dropdownBounds.h)) {
-    
-    Serial.println("[UI] Dropdown touched - toggling expansion");
-    UIManager_dropdownExpanded = !UIManager_dropdownExpanded;
-    UIManager_needsFullRepaint = true;
+  // Calculate combo box positions (same as in drawNowPlayingPage)
+  const int margin = 10;
+  const int comboWidth = 220;
+  const int normalHeight = 40;
+  const int doubleHeight = 70;
+  const int spacing = 8;
+  
+  int comboY = 30; // Start position
+  
+  // Check which combo box was touched
+  // 1. Instance Combo Box
+  if (x >= margin && x <= (margin + comboWidth) && 
+      y >= comboY && y <= (comboY + normalHeight)) {
+    Serial.println("[UI] Instance combo box touched");
+    UIManager_handleInstanceComboTouch();
+    return;
+  }
+  comboY += normalHeight + spacing;
+  
+  // 2. Playlist Combo Box
+  if (x >= margin && x <= (margin + comboWidth) && 
+      y >= comboY && y <= (comboY + normalHeight)) {
+    Serial.println("[UI] Playlist combo box touched");
+    UIManager_handlePlaylistComboTouch();
+    return;
+  }
+  comboY += normalHeight + spacing;
+  
+  // 3. Preset Combo Box
+  if (x >= margin && x <= (margin + comboWidth) && 
+      y >= comboY && y <= (comboY + normalHeight)) {
+    Serial.println("[UI] Preset combo box touched");
+    UIManager_handlePresetComboTouch();
+    return;
+  }
+  comboY += normalHeight + spacing;
+  
+  // 4. Effect Combo Box
+  if (x >= margin && x <= (margin + comboWidth) && 
+      y >= comboY && y <= (comboY + normalHeight)) {
+    Serial.println("[UI] Effect combo box touched");
+    UIManager_handleEffectComboTouch();
+    return;
+  }
+  comboY += normalHeight + spacing;
+  
+  // 5. Palette Combo Box (double height)
+  if (x >= margin && x <= (margin + comboWidth) && 
+      y >= comboY && y <= (comboY + doubleHeight)) {
+    Serial.println("[UI] Palette combo box touched");
+    UIManager_handlePaletteComboTouch();
     return;
   }
   
-  // Check if dropdown is expanded and touch is within list area
-  if (UIManager_dropdownExpanded) {
-    const int listY = UIManager_dropdownBounds.y + UIManager_dropdownBounds.h;
-    const int itemH = 30;
-    const int maxItems = min(WLED_INSTANCE_COUNT, (uint8_t)6);
-    const int listH = itemH * maxItems;
+  Serial.printf("[UI] Touch at (%d, %d) - no combo box hit\n", x, y);
+}
+
+// Handle instance combo box touch - cycle through instances
+void UIManager_handleInstanceComboTouch() {
+  // Simple cycling through instances
+  uint8_t nextInstance = (CURRENT_WLED_INSTANCE + 1) % WLED_INSTANCE_COUNT;
+  
+  if (nextInstance != CURRENT_WLED_INSTANCE) {
+    const char* friendlyName = safeGetWLEDName(nextInstance);
+    const char* ipAddress = safeGetWLEDIP(nextInstance);
     
-    if (x >= UIManager_dropdownBounds.x && 
-        x <= (UIManager_dropdownBounds.x + UIManager_dropdownBounds.w) &&
-        y >= listY && y <= (listY + listH)) {
-      
-      // Calculate which item was touched
-      int itemIndex = (y - listY) / itemH;
-      if (itemIndex >= 0 && itemIndex < maxItems && itemIndex < WLED_INSTANCE_COUNT) {
-        Serial.printf("[UI] Dropdown item %d selected\n", itemIndex);
-        
-        // Switch to selected instance if different
-        if (itemIndex != CURRENT_WLED_INSTANCE) {
-          const char* friendlyName = safeGetWLEDName(itemIndex);
-          const char* ipAddress = safeGetWLEDIP(itemIndex);
-          
-          // Reset WLED client state when switching instances  
-          WLEDClient_forceResetBackoff();
-          WLEDClient_forceResetHTTPState();
-          Serial.println("[UI] Reset WLED client backoff and HTTP state for instance switch");
-          
-          // Use persistence manager to save the change
-          if (PersistenceManager_onWLEDInstanceChanged(itemIndex)) {
-            Serial.printf("[UI] Switched to WLED instance %d: %s (%s) - SAVED\n", 
-                          itemIndex, friendlyName, ipAddress);
-          } else {
-            // Fallback if persistence fails
-            CURRENT_WLED_INSTANCE = itemIndex;
-            Serial.printf("[UI] Switched to WLED instance %d: %s (%s) - NOT SAVED\n", 
-                          itemIndex, friendlyName, ipAddress);
-          }
-        }
-        
-        // Collapse dropdown and refresh display
-        UIManager_dropdownExpanded = false;
-        UIManager_needsFullRepaint = true;
-        return;
-      }
+    // Reset WLED client state when switching instances
+    WLEDClient_forceResetBackoff();
+    WLEDClient_forceResetHTTPState();
+    Serial.println("[UI] Reset WLED client state for instance switch");
+    
+    // Use persistence manager to save the change
+    if (PersistenceManager_onWLEDInstanceChanged(nextInstance)) {
+      Serial.printf("[UI] Switched to WLED instance %d: %s (%s) - SAVED\n", 
+                    nextInstance, friendlyName, ipAddress);
     } else {
-      // Touch outside dropdown list - collapse it
-      UIManager_dropdownExpanded = false;
-      UIManager_needsFullRepaint = true;
-      return;
+      // Fallback if persistence fails
+      CURRENT_WLED_INSTANCE = nextInstance;
+      Serial.printf("[UI] Switched to WLED instance %d: %s (%s) - NOT SAVED\n", 
+                    nextInstance, friendlyName, ipAddress);
+    }
+    
+    // Refresh display
+    UIManager_needsFullRepaint = true;
+  }
+}
+
+// Get list of available playlists from WLED presets.json
+int UIManager_getAvailablePlaylists(int* playlistIds, char playlistNames[][64], int maxPlaylists) {
+  if (!playlistIds || !playlistNames || maxPlaylists <= 0) return 0;
+  
+  // Use similar logic to WLEDClient_detectPlaylist but return all playlists
+  if (!WiFiManager_isConnected() || !WLEDClient_guard()) {
+    Serial.println("[UI] Cannot fetch playlists - no connection");
+    return 0;
+  }
+  
+  char urlBuffer[128];
+  snprintf(urlBuffer, sizeof(urlBuffer), "http://%s/presets.json", WLED_IP);
+  
+  HTTPClient http;
+  WiFiClient wifiClient;
+  
+  if (!http.begin(wifiClient, urlBuffer)) {
+    Serial.println("[UI] Failed to begin HTTP request for playlists");
+    return 0;
+  }
+  
+  http.setTimeout(5000);
+  int httpCode = http.GET();
+  
+  if (httpCode != HTTP_CODE_OK) {
+    Serial.printf("[UI] Playlist fetch failed: %d\n", httpCode);
+    http.end();
+    return 0;
+  }
+  
+  String response = http.getString();
+  http.end();
+  
+  JsonDocument doc;
+  DeserializationError error = deserializeJson(doc, response);
+  
+  if (error) {
+    Serial.printf("[UI] Playlist JSON parse failed: %s\n", error.c_str());
+    return 0;
+  }
+  
+  int count = 0;
+  
+  // Search through all presets for playlists
+  for (JsonPair p : doc.as<JsonObject>()) {
+    if (count >= maxPlaylists) break;
+    
+    JsonObject preset = p.value();
+    if (!preset || !preset.containsKey("playlist")) continue;
+    
+    JsonObject playlist = preset["playlist"];
+    if (!playlist || !playlist.containsKey("ps")) continue;
+    
+    // This preset contains a playlist
+    int presetId = atoi(p.key().c_str());
+    const char* name = preset["n"] | "Unnamed Playlist";
+    
+    playlistIds[count] = presetId;
+    strncpy(playlistNames[count], name, 63);
+    playlistNames[count][63] = '\0';
+    
+    Serial.printf("[UI] Found playlist %d: %s\n", presetId, name);
+    count++;
+  }
+  
+  Serial.printf("[UI] Total playlists found: %d\n", count);
+  return count;
+}
+
+// Get current playlist ID from WLED state
+int UIManager_getCurrentPlaylistId() {
+  JsonDocument doc;
+  if (!WLEDClient_fetchWledState(doc)) {
+    Serial.println("[UI] Failed to get current state for playlist ID");
+    return -1;
+  }
+  
+  JsonObject state = doc["state"];
+  if (!state.isNull() && state.containsKey("pl")) {
+    int playlistId = state["pl"] | -1;
+    Serial.printf("[UI] Current playlist ID from state: %d\n", playlistId);
+    return playlistId;
+  }
+  
+  Serial.println("[UI] No current playlist in state");
+  return -1;
+}
+
+// Activate a playlist by sending preset command to WLED  
+void UIManager_activatePlaylist(int playlistId) {
+  if (playlistId <= 0) {
+    Serial.println("[UI] Invalid playlist ID");
+    return;
+  }
+  
+  Serial.printf("[UI] Activating playlist ID %d\n", playlistId);
+  
+  // Send preset command to WLED (playlists are activated as presets)
+  char postData[64];
+  snprintf(postData, sizeof(postData), "{\"ps\":%d}", playlistId);
+  
+  if (WLEDClient_sendCommand(postData)) {
+    Serial.printf("[UI] Successfully activated playlist %d\n", playlistId);
+    // Force UI refresh to show new state
+    UIManager_forceNowPlayingUpdate = true;
+  } else {
+    Serial.printf("[UI] Failed to activate playlist %d\n", playlistId);
+  }
+}
+
+// Handle playlist combo box touch - cycle through available playlists
+void UIManager_handlePlaylistComboTouch() {
+  Serial.println("[UI] Playlist combo box touched - cycling playlists");
+  
+  // Get list of available playlists from presets.json
+  int playlistIds[10];  // Support up to 10 playlists
+  char playlistNames[10][64];
+  int playlistCount = UIManager_getAvailablePlaylists(playlistIds, playlistNames, 10);
+  
+  if (playlistCount == 0) {
+    Serial.println("[UI] No playlists available to cycle through");
+    return;
+  }
+  
+  Serial.printf("[UI] Found %d playlists available\n", playlistCount);
+  
+  // Get current playlist ID from WLED state
+  int currentPlaylistId = UIManager_getCurrentPlaylistId();
+  Serial.printf("[UI] Current playlist ID: %d\n", currentPlaylistId);
+  
+  // Find current playlist in the list and select next one
+  int nextIndex = 0;
+  for (int i = 0; i < playlistCount; i++) {
+    if (playlistIds[i] == currentPlaylistId) {
+      nextIndex = (i + 1) % playlistCount;  // Cycle to next, wrap around
+      break;
     }
   }
   
-  // Check if touch is within refresh button bounds (80, 280, 80x30)
-  int buttonY = 280;
+  int nextPlaylistId = playlistIds[nextIndex];
+  Serial.printf("[UI] Cycling to playlist ID %d: %s\n", nextPlaylistId, playlistNames[nextIndex]);
   
-  if (x >= 80 && x <= 160 && y >= buttonY && y <= (buttonY + 30)) {
-    Serial.println("[UI] Refresh button pressed on Now Playing page");
-    
-    // Aggressive connection reset sequence
-    WLEDClient_forceResetBackoff();
-    WLEDClient_forceResetHTTPState();
-    Serial.println("[UI] Reset WLED client backoff and HTTP state for immediate retry");
-    
-    // Show immediate feedback
-    auto& tft = DisplayManager_getTFT();
-    tft.fillRect(10, 60, 220, 200, ST77XX_BLACK);
-    tft.setTextSize(1);
-    tft.setTextColor(ST77XX_YELLOW, ST77XX_BLACK);
-    tft.setCursor(10, 80);
-    tft.print("Refreshing connection...");
-    
-    // Small delay to show the message
-    delay(100);
-    
-    // Force a refresh of the now playing page by triggering a repaint
-    UIManager_needsFullRepaint = true;
-    
-    // Optional: Add visual feedback for button press
-    tft.fillRect(80, buttonY, 80, 30, ST77XX_WHITE);
-    tft.setTextColor(ST77XX_BLACK, ST77XX_WHITE);
-    tft.setCursor(95, buttonY + 8);
-    tft.setTextSize(1);
-    tft.print("Refresh");
-    
-    delay(100); // Brief visual feedback
-    UIManager_needsFullRepaint = true; // Trigger immediate repaint
+  // Send command to WLED to start the selected playlist
+  UIManager_activatePlaylist(nextPlaylistId);
+}
+
+// Get list of available presets from WLED presets.json (excluding playlists)
+int UIManager_getAvailablePresets(int* presetIds, char presetNames[][64], int maxPresets) {
+  if (!presetIds || !presetNames || maxPresets <= 0) return 0;
+  
+  if (!WiFiManager_isConnected() || !WLEDClient_guard()) {
+    Serial.println("[UI] Cannot fetch presets - no connection");
+    return 0;
   }
+  
+  char urlBuffer[128];
+  snprintf(urlBuffer, sizeof(urlBuffer), "http://%s/presets.json", WLED_IP);
+  
+  HTTPClient http;
+  WiFiClient wifiClient;
+  
+  if (!http.begin(wifiClient, urlBuffer)) {
+    Serial.println("[UI] Failed to begin HTTP request for presets");
+    return 0;
+  }
+  
+  http.setTimeout(5000);
+  int httpCode = http.GET();
+  
+  if (httpCode != HTTP_CODE_OK) {
+    Serial.printf("[UI] Preset fetch failed: %d\n", httpCode);
+    http.end();
+    return 0;
+  }
+  
+  String response = http.getString();
+  http.end();
+  
+  JsonDocument doc;
+  DeserializationError error = deserializeJson(doc, response);
+  
+  if (error) {
+    Serial.printf("[UI] Preset JSON parse failed: %s\n", error.c_str());
+    return 0;
+  }
+  
+  int count = 0;
+  
+  // Search through all presets, excluding playlists
+  for (JsonPair p : doc.as<JsonObject>()) {
+    if (count >= maxPresets) break;
+    
+    JsonObject preset = p.value();
+    if (!preset) continue;
+    
+    // Skip if this is a playlist preset
+    if (preset.containsKey("playlist")) continue;
+    
+    // This is a regular preset
+    int presetId = atoi(p.key().c_str());
+    const char* name = preset["n"] | "Unnamed Preset";
+    
+    presetIds[count] = presetId;
+    strncpy(presetNames[count], name, 63);
+    presetNames[count][63] = '\0';
+    
+    Serial.printf("[UI] Found preset %d: %s\n", presetId, name);
+    count++;
+  }
+  
+  Serial.printf("[UI] Total presets found: %d\n", count);
+  return count;
+}
+
+// Get current preset ID from WLED state
+int UIManager_getCurrentPresetId() {
+  JsonDocument doc;
+  if (!WLEDClient_fetchWledState(doc)) {
+    Serial.println("[UI] Failed to get current state for preset ID");
+    return -1;
+  }
+  
+  JsonObject state = doc["state"];
+  if (!state.isNull() && state.containsKey("ps")) {
+    int presetId = state["ps"] | -1;
+    Serial.printf("[UI] Current preset ID from state: %d\n", presetId);
+    return presetId;
+  }
+  
+  Serial.println("[UI] No current preset in state");
+  return -1;
+}
+
+// Activate a preset by sending preset command to WLED
+void UIManager_activatePreset(int presetId) {
+  if (presetId <= 0) {
+    Serial.println("[UI] Invalid preset ID");
+    return;
+  }
+  
+  Serial.printf("[UI] Activating preset ID %d\n", presetId);
+  
+  // Send preset command to WLED
+  char postData[64];
+  snprintf(postData, sizeof(postData), "{\"ps\":%d}", presetId);
+  
+  if (WLEDClient_sendCommand(postData)) {
+    Serial.printf("[UI] Successfully activated preset %d\n", presetId);
+    // Force UI refresh to show new state
+    UIManager_forceNowPlayingUpdate = true;
+  } else {
+    Serial.printf("[UI] Failed to activate preset %d\n", presetId);
+  }
+}
+
+// Handle preset combo box touch - cycle through available presets
+void UIManager_handlePresetComboTouch() {
+  Serial.println("[UI] Preset combo box touched - cycling presets");
+  
+  // Get list of available presets from presets.json
+  int presetIds[20];  // Support up to 20 presets
+  char presetNames[20][64];
+  int presetCount = UIManager_getAvailablePresets(presetIds, presetNames, 20);
+  
+  if (presetCount == 0) {
+    Serial.println("[UI] No presets available to cycle through");
+    return;
+  }
+  
+  Serial.printf("[UI] Found %d presets available\n", presetCount);
+  
+  // Get current preset ID from WLED state
+  int currentPresetId = UIManager_getCurrentPresetId();
+  Serial.printf("[UI] Current preset ID: %d\n", currentPresetId);
+  
+  // Find current preset in the list and select next one
+  int nextIndex = 0;
+  for (int i = 0; i < presetCount; i++) {
+    if (presetIds[i] == currentPresetId) {
+      nextIndex = (i + 1) % presetCount;  // Cycle to next, wrap around
+      break;
+    }
+  }
+  
+  int nextPresetId = presetIds[nextIndex];
+  Serial.printf("[UI] Cycling to preset ID %d: %s\n", nextPresetId, presetNames[nextIndex]);
+  
+  // Send command to WLED to activate the selected preset
+  UIManager_activatePreset(nextPresetId);
+}
+
+// Get current effect ID from WLED state  
+int UIManager_getCurrentEffectId() {
+  JsonDocument doc;
+  if (!WLEDClient_fetchWledState(doc)) {
+    Serial.println("[UI] Failed to get current state for effect ID");
+    return -1;
+  }
+  
+  JsonObject state = doc["state"];
+  if (state.isNull()) {
+    Serial.println("[UI] No state object");
+    return -1;
+  }
+  
+  JsonArray seg = state["seg"];
+  if (seg.isNull() || seg.size() == 0) {
+    Serial.println("[UI] No segments in state");
+    return -1;
+  }
+  
+  // Get main segment
+  int mainSeg = state["mainseg"] | 0;
+  JsonObject mainSegment = seg[mainSeg];
+  if (mainSegment.isNull()) {
+    mainSegment = seg[0];  // fallback to first segment
+  }
+  
+  if (mainSegment.isNull()) {
+    Serial.println("[UI] Could not access main segment");
+    return -1;
+  }
+  
+  int effectId = mainSegment["fx"] | -1;
+  Serial.printf("[UI] Current effect ID from state: %d\n", effectId);
+  return effectId;
+}
+
+// Get total number of effects from WLED
+int UIManager_getTotalEffectsCount() {
+  if (!WiFiManager_isConnected() || !WLEDClient_guard()) {
+    Serial.println("[UI] Cannot fetch effects count - no connection");
+    return 0;
+  }
+  
+  char urlBuffer[128];
+  snprintf(urlBuffer, sizeof(urlBuffer), "http://%s/json/effects", WLED_IP);
+  
+  HTTPClient http;
+  WiFiClient wifiClient;
+  
+  if (!http.begin(wifiClient, urlBuffer)) {
+    Serial.println("[UI] Failed to begin HTTP request for effects");
+    return 0;
+  }
+  
+  http.setTimeout(5000);
+  int httpCode = http.GET();
+  
+  if (httpCode != HTTP_CODE_OK) {
+    Serial.printf("[UI] Effects fetch failed: %d\n", httpCode);
+    http.end();
+    return 0;
+  }
+  
+  String response = http.getString();
+  http.end();
+  
+  JsonDocument doc;
+  DeserializationError error = deserializeJson(doc, response);
+  
+  if (error) {
+    Serial.printf("[UI] Effects JSON parse failed: %s\n", error.c_str());
+    return 0;
+  }
+  
+  JsonArray effects = doc.as<JsonArray>();
+  if (effects.isNull()) {
+    Serial.println("[UI] Effects array is null");
+    return 0;
+  }
+  
+  int count = effects.size();
+  Serial.printf("[UI] Total effects count: %d\n", count);
+  return count;
+}
+
+// Change effect by sending command to WLED
+void UIManager_changeEffect(int effectId) {
+  if (effectId < 0) {
+    Serial.println("[UI] Invalid effect ID");
+    return;
+  }
+  
+  Serial.printf("[UI] Changing to effect ID %d\n", effectId);
+  
+  // Send effect change command to main segment
+  char postData[128];
+  snprintf(postData, sizeof(postData), "{\"seg\":[{\"fx\":%d}]}", effectId);
+  
+  if (WLEDClient_sendCommand(postData)) {
+    Serial.printf("[UI] Successfully changed to effect %d\n", effectId);
+    // Force UI refresh to show new state
+    UIManager_forceNowPlayingUpdate = true;
+  } else {
+    Serial.printf("[UI] Failed to change effect to %d\n", effectId);
+  }
+}
+
+// Handle effect combo box touch - cycle through available effects
+void UIManager_handleEffectComboTouch() {
+  Serial.println("[UI] Effect combo box touched - cycling effects");
+  
+  // Get current effect ID from WLED state
+  int currentEffectId = UIManager_getCurrentEffectId();
+  if (currentEffectId < 0) {
+    Serial.println("[UI] Could not get current effect ID");
+    return;
+  }
+  
+  Serial.printf("[UI] Current effect ID: %d\n", currentEffectId);
+  
+  // Get total number of effects from WLED
+  int totalEffects = UIManager_getTotalEffectsCount();
+  if (totalEffects <= 0) {
+    Serial.println("[UI] Could not get total effects count");
+    return;
+  }
+  
+  Serial.printf("[UI] Total effects available: %d\n", totalEffects);
+  
+  // Cycle to next effect
+  int nextEffectId = (currentEffectId + 1) % totalEffects;
+  Serial.printf("[UI] Cycling to effect ID %d\n", nextEffectId);
+  
+  // Send command to WLED to change effect
+  UIManager_changeEffect(nextEffectId);
+}
+
+// Get current palette ID from WLED state  
+int UIManager_getCurrentPaletteId() {
+  JsonDocument doc;
+  if (!WLEDClient_fetchWledState(doc)) {
+    Serial.println("[UI] Failed to get current state for palette ID");
+    return -1;
+  }
+  
+  JsonObject state = doc["state"];
+  if (state.isNull()) {
+    Serial.println("[UI] No state object");
+    return -1;
+  }
+  
+  JsonArray seg = state["seg"];
+  if (seg.isNull() || seg.size() == 0) {
+    Serial.println("[UI] No segments in state");
+    return -1;
+  }
+  
+  // Get main segment
+  int mainSeg = state["mainseg"] | 0;
+  JsonObject mainSegment = seg[mainSeg];
+  if (mainSegment.isNull()) {
+    mainSegment = seg[0];  // fallback to first segment
+  }
+  
+  if (mainSegment.isNull()) {
+    Serial.println("[UI] Could not access main segment");
+    return -1;
+  }
+  
+  int paletteId = mainSegment["pal"] | -1;
+  Serial.printf("[UI] Current palette ID from state: %d\n", paletteId);
+  return paletteId;
+}
+
+// Get total number of palettes from WLED
+int UIManager_getTotalPalettesCount() {
+  if (!WiFiManager_isConnected() || !WLEDClient_guard()) {
+    Serial.println("[UI] Cannot fetch palettes count - no connection");
+    return 0;
+  }
+  
+  char urlBuffer[128];
+  snprintf(urlBuffer, sizeof(urlBuffer), "http://%s/json/palettes", WLED_IP);
+  
+  HTTPClient http;
+  WiFiClient wifiClient;
+  
+  if (!http.begin(wifiClient, urlBuffer)) {
+    Serial.println("[UI] Failed to begin HTTP request for palettes");
+    return 0;
+  }
+  
+  http.setTimeout(5000);
+  int httpCode = http.GET();
+  
+  if (httpCode != HTTP_CODE_OK) {
+    Serial.printf("[UI] Palettes fetch failed: %d\n", httpCode);
+    http.end();
+    return 0;
+  }
+  
+  String response = http.getString();
+  http.end();
+  
+  JsonDocument doc;
+  DeserializationError error = deserializeJson(doc, response);
+  
+  if (error) {
+    Serial.printf("[UI] Palettes JSON parse failed: %s\n", error.c_str());
+    return 0;
+  }
+  
+  JsonArray palettes = doc.as<JsonArray>();
+  if (palettes.isNull()) {
+    Serial.println("[UI] Palettes array is null");
+    return 0;
+  }
+  
+  int count = palettes.size();
+  Serial.printf("[UI] Total palettes count: %d\n", count);
+  return count;
+}
+
+// Change palette by sending command to WLED
+void UIManager_changePalette(int paletteId) {
+  if (paletteId < 0) {
+    Serial.println("[UI] Invalid palette ID");
+    return;
+  }
+  
+  Serial.printf("[UI] Changing to palette ID %d\n", paletteId);
+  
+  // Send palette change command to main segment
+  char postData[128];
+  snprintf(postData, sizeof(postData), "{\"seg\":[{\"pal\":%d}]}", paletteId);
+  
+  if (WLEDClient_sendCommand(postData)) {
+    Serial.printf("[UI] Successfully changed to palette %d\n", paletteId);
+    // Force UI refresh to show new state
+    UIManager_forceNowPlayingUpdate = true;
+  } else {
+    Serial.printf("[UI] Failed to change palette to %d\n", paletteId);
+  }
+}
+
+// Handle palette combo box touch - cycle through available palettes
+void UIManager_handlePaletteComboTouch() {
+  Serial.println("[UI] Palette combo box touched - cycling palettes");
+  
+  // Get current palette ID from WLED state
+  int currentPaletteId = UIManager_getCurrentPaletteId();
+  if (currentPaletteId < 0) {
+    Serial.println("[UI] Could not get current palette ID");
+    return;
+  }
+  
+  Serial.printf("[UI] Current palette ID: %d\n", currentPaletteId);
+  
+  // Get total number of palettes from WLED
+  int totalPalettes = UIManager_getTotalPalettesCount();
+  if (totalPalettes <= 0) {
+    Serial.println("[UI] Could not get total palettes count");
+    return;
+  }
+  
+  Serial.printf("[UI] Total palettes available: %d\n", totalPalettes);
+  
+  // Cycle to next palette
+  int nextPaletteId = (currentPaletteId + 1) % totalPalettes;
+  Serial.printf("[UI] Cycling to palette ID %d\n", nextPaletteId);
+  
+  // Send command to WLED to change palette
+  UIManager_changePalette(nextPaletteId);
 }
 
 #endif // ENABLE_NOW_PLAYING_PAGE

@@ -446,6 +446,19 @@ void UIManager_drawWLEDStateInfo(JsonDocument& doc);
 bool UIManager_drawPaletteRepresentativeColors(int paletteId, int startX, int startY);
 const char* UIManager_getEffectName(int effectId);
 const char* UIManager_getPaletteName(int paletteId);
+// Combo box functions
+int UIManager_getAvailablePlaylists(int* playlistIds, char playlistNames[][64], int maxPlaylists);
+int UIManager_getCurrentPlaylistId();
+void UIManager_activatePlaylist(int playlistId);
+int UIManager_getAvailablePresets(int* presetIds, char presetNames[][64], int maxPresets);
+int UIManager_getCurrentPresetId();
+void UIManager_activatePreset(int presetId);
+int UIManager_getCurrentEffectId();
+int UIManager_getTotalEffectsCount();
+void UIManager_changeEffect(int effectId);
+int UIManager_getCurrentPaletteId();
+int UIManager_getTotalPalettesCount();
+void UIManager_changePalette(int paletteId);
 #endif
 // Experimental font-based UI
 void UIManager_drawTextButton(const IconBtn& btn, bool pressed, const char* iconText);

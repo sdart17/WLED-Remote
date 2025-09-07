@@ -691,29 +691,42 @@ void UIManager_drawComboBox(int x, int y, int w, int h, const char* label, const
   tft.setCursor(x + 5, y + 5);
   tft.print(label);
   
-  // Draw value (larger, center)
+  // Draw left arrow
+  tft.setTextSize(1);
+  uint16_t arrowColor = enabled ? ST77XX_CYAN : 0x8410; // Gray color (RGB565) when disabled
+  tft.setTextColor(arrowColor, ST77XX_BLACK);
+  tft.setCursor(x + 3, y + h/2 - 3);
+  tft.print("<");
+  
+  // Draw value (larger, center) - adjust positioning for arrows
   tft.setTextSize(2);
   uint16_t valueColor = enabled ? ST77XX_WHITE : 0x8410; // Gray color (RGB565)
   tft.setTextColor(valueColor, ST77XX_BLACK);
   
-  // Calculate center position
+  // Calculate center position with space for arrows
   int textY = y + h/2 - 4; // Adjust for text height
-  tft.setCursor(x + 8, textY);
+  int textStartX = x + 15; // Leave space for left arrow
+  int maxTextWidth = w - 25; // Leave space for both arrows
+  tft.setCursor(textStartX, textY);
   
-  // Truncate text if too long
-  char truncatedValue[20];
-  if (strlen(value) > 18) {
-    strncpy(truncatedValue, value, 15);
-    strncpy(truncatedValue + 15, "...", 4);
+  // Truncate text if too long (accounting for arrows)
+  char truncatedValue[18];
+  int maxChars = maxTextWidth / 12; // Approximate character width for size 2 text
+  if (maxChars > 15) maxChars = 15; // Safety limit
+  
+  if (strlen(value) > maxChars) {
+    strncpy(truncatedValue, value, maxChars - 3);
+    strncpy(truncatedValue + maxChars - 3, "...", 4);
     tft.print(truncatedValue);
   } else {
     tft.print(value);
   }
   
-  // Draw dropdown arrow
+  // Draw right arrow
   tft.setTextSize(1);
-  tft.setCursor(x + w - 15, y + h/2 - 3);
-  tft.print("v");
+  tft.setTextColor(arrowColor, ST77XX_BLACK);
+  tft.setCursor(x + w - 10, y + h/2 - 3);
+  tft.print(">");
 }
 
 // Draw the palette combo box with swatches
@@ -746,30 +759,43 @@ void UIManager_drawPaletteComboBox(int x, int y, int w, int h, JsonDocument& doc
   int paletteId = -1;
   UIManager_getPaletteInfo(doc, paletteName, sizeof(paletteName), &paletteId);
   
-  // Draw palette name
+  // Draw left arrow
+  tft.setTextSize(1);
+  uint16_t arrowColor = dataAvailable ? ST77XX_CYAN : 0x8410; // Gray color when disabled
+  tft.setTextColor(arrowColor, ST77XX_BLACK);
+  tft.setCursor(x + 3, y + 23);
+  tft.print("<");
+  
+  // Draw palette name - adjust positioning for arrows
   tft.setTextSize(2);
   tft.setTextColor(ST77XX_WHITE, ST77XX_BLACK);
-  tft.setCursor(x + 8, y + 20);
+  int textStartX = x + 15; // Leave space for left arrow
+  int maxTextWidth = w - 25; // Leave space for both arrows  
+  tft.setCursor(textStartX, y + 20);
   
-  // Truncate name if too long
-  if (strlen(paletteName) > 15) {
-    char truncated[16];
-    strncpy(truncated, paletteName, 12);
-    strncpy(truncated + 12, "...", 4);
+  // Truncate name if too long (accounting for arrows)
+  int maxChars = (maxTextWidth / 12); // Approximate character width for size 2 text
+  if (maxChars > 12) maxChars = 12; // Safety limit
+  
+  if (strlen(paletteName) > maxChars) {
+    char truncated[15];
+    strncpy(truncated, paletteName, maxChars - 3);
+    strncpy(truncated + maxChars - 3, "...", 4);
     tft.print(truncated);
   } else {
     tft.print(paletteName);
   }
   
-  // Draw palette swatches on second line
-  if (paletteId > 0) {
-    UIManager_drawPaletteSwatches(x + 8, y + 45, paletteId);
-  }
-  
-  // Draw dropdown arrow
+  // Draw right arrow
   tft.setTextSize(1);
-  tft.setCursor(x + w - 15, y + 25);
-  tft.print("v");
+  tft.setTextColor(arrowColor, ST77XX_BLACK);
+  tft.setCursor(x + w - 10, y + 23);
+  tft.print(">");
+  
+  // Draw palette swatches on second line (adjust for arrows)
+  if (paletteId > 0) {
+    UIManager_drawPaletteSwatches(x + 15, y + 45, paletteId); // Align with palette name
+  }
 }
 
 // Extract palette information from WLED state

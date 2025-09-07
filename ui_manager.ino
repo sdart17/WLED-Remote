@@ -92,48 +92,52 @@ static IconBtn UIManager_page3Buttons[] = {
 };
 static const int UIManager_PAGE3_BTN_COUNT = 2;
 
-// ENHANCED: Page mapping function to handle optional pages (now playing + brightness + WLED selection)
+// ENHANCED: Page mapping function - Now Playing as second page after Home
 static int UIManager_mapToPhysicalPage(int logicalPage) {
   // Safety check: ensure logical page is within valid range
   if (logicalPage < 0) return 0;
   if (logicalPage >= TOTAL_UI_PAGES) return 0;
   
-  // New page layout:
-  // Physical 0: Main controls (logical 0) - always present
-  // Physical 1: Navigation controls (logical 1) - always present  
-  // Physical 2: Now Playing with Instance Dropdown (logical 2) - if ENABLE_NOW_PLAYING_PAGE
-  // Physical 3: Brightness slider (logical 3) - if ENABLE_BRIGHTNESS_PAGE
-  // Physical 4: System controls - always present (logical varies based on optional pages)
-  // Note: WLED selection merged into Now Playing page
+  // NEW page layout with Now Playing as second page:
+  // Logical 0 -> Physical 0: Main controls (Home)
+  // Logical 1 -> Physical 2: Now Playing (if enabled), else Navigation  
+  // Logical 2 -> Physical 1: Navigation controls
+  // Logical 3 -> Physical 3: Brightness (if enabled)
+  // Logical N -> Physical 4+: System controls
   
-  if (logicalPage <= 1) {
-    return logicalPage; // Pages 0,1 always direct mapping
+  switch (logicalPage) {
+    case 0:
+      return 0; // Home/Main page
+      
+    case 1:
+      // Second page -> Now Playing (if enabled), otherwise Navigation
+      if (ENABLE_NOW_PLAYING_PAGE) {
+        return 2; // Now Playing
+      } else {
+        return 1; // Navigation fallback
+      }
+      
+    case 2:
+      // Third page -> Navigation (always physical page 1)
+      return 1;
+      
+    default:
+      // Handle remaining pages starting from logical page 3
+      int remainingPages = logicalPage - 3;
+      int physicalStart = 3;
+      
+      // Brightness page (if enabled)
+      if (ENABLE_BRIGHTNESS_PAGE) {
+        if (remainingPages == 0) return physicalStart;
+        remainingPages--;
+        physicalStart++;
+      }
+      
+      // System page (always last)
+      if (remainingPages == 0) return physicalStart;
+      
+      return 0; // Fallback to home
   }
-  
-  int physicalPage = 2; // Start from physical page 2
-  
-  // Page 2: Now Playing (if enabled)
-  if (ENABLE_NOW_PLAYING_PAGE) {
-    if (logicalPage == 2) return 2;
-    physicalPage = 3;
-  }
-  
-  // Page 3: Brightness (if enabled) 
-  if (ENABLE_BRIGHTNESS_PAGE) {
-    if (logicalPage == (ENABLE_NOW_PLAYING_PAGE ? 3 : 2)) return physicalPage;
-    physicalPage++;
-  }
-  
-  // System page
-  int systemLogicalPage = 2;
-  if (ENABLE_NOW_PLAYING_PAGE) systemLogicalPage++;
-  if (ENABLE_BRIGHTNESS_PAGE) systemLogicalPage++;
-  
-  if (logicalPage == systemLogicalPage) return physicalPage;
-  
-  // WLED Selection page is now merged into Now Playing - no separate page needed
-  
-  return physicalPage;
 }
 
 static int UIManager_mapFromPhysicalPage(int physicalPage) {
@@ -1414,11 +1418,18 @@ void UIManager_handleNowPlayingTouch(int16_t x, int16_t y) {
   const int doubleHeight = 70;
   const int spacing = 8;
   
+  // Enhanced touch targets: 30% from each edge (72px from left/right edges)
+  const int screenWidth = 240;
+  const int touchMarginLeft = 0;   // Extend to screen edge
+  const int touchMarginRight = screenWidth; // Extend to screen edge
+  const int leftTouchZone = screenWidth * 30 / 100;  // 72px from left
+  const int rightTouchZone = screenWidth * 70 / 100; // 168px from left (30% from right)
+  
   int comboY = 30; // Start position
   
-  // Check which combo box was touched
+  // Check which combo box was touched (Y-axis) with extended X-axis touch zones
   // 1. Instance Combo Box
-  if (x >= margin && x <= (margin + comboWidth) && 
+  if (x >= touchMarginLeft && x <= touchMarginRight && 
       y >= comboY && y <= (comboY + normalHeight)) {
     Serial.println("[UI] Instance combo box touched");
     UIManager_handleInstanceComboTouch();
@@ -1427,7 +1438,7 @@ void UIManager_handleNowPlayingTouch(int16_t x, int16_t y) {
   comboY += normalHeight + spacing;
   
   // 2. Playlist Combo Box
-  if (x >= margin && x <= (margin + comboWidth) && 
+  if (x >= touchMarginLeft && x <= touchMarginRight && 
       y >= comboY && y <= (comboY + normalHeight)) {
     Serial.println("[UI] Playlist combo box touched");
     UIManager_handlePlaylistComboTouch();
@@ -1436,7 +1447,7 @@ void UIManager_handleNowPlayingTouch(int16_t x, int16_t y) {
   comboY += normalHeight + spacing;
   
   // 3. Preset Combo Box
-  if (x >= margin && x <= (margin + comboWidth) && 
+  if (x >= touchMarginLeft && x <= touchMarginRight && 
       y >= comboY && y <= (comboY + normalHeight)) {
     Serial.println("[UI] Preset combo box touched");
     UIManager_handlePresetComboTouch();
@@ -1445,7 +1456,7 @@ void UIManager_handleNowPlayingTouch(int16_t x, int16_t y) {
   comboY += normalHeight + spacing;
   
   // 4. Effect Combo Box
-  if (x >= margin && x <= (margin + comboWidth) && 
+  if (x >= touchMarginLeft && x <= touchMarginRight && 
       y >= comboY && y <= (comboY + normalHeight)) {
     Serial.println("[UI] Effect combo box touched");
     UIManager_handleEffectComboTouch();
@@ -1454,7 +1465,7 @@ void UIManager_handleNowPlayingTouch(int16_t x, int16_t y) {
   comboY += normalHeight + spacing;
   
   // 5. Palette Combo Box (double height)
-  if (x >= margin && x <= (margin + comboWidth) && 
+  if (x >= touchMarginLeft && x <= touchMarginRight && 
       y >= comboY && y <= (comboY + doubleHeight)) {
     Serial.println("[UI] Palette combo box touched");
     UIManager_handlePaletteComboTouch();
@@ -1597,8 +1608,10 @@ void UIManager_activatePlaylist(int playlistId) {
   
   if (WLEDClient_sendCommand(postData)) {
     Serial.printf("[UI] Successfully activated playlist %d\n", playlistId);
-    // Force UI refresh to show new state
+    // Force immediate UI refresh to show new state
     UIManager_forceNowPlayingUpdate = true;
+    UIManager_needsFullRepaint = true;
+    UIManager_paintPage();
   } else {
     Serial.printf("[UI] Failed to activate playlist %d\n", playlistId);
   }
@@ -1742,8 +1755,10 @@ void UIManager_activatePreset(int presetId) {
   
   if (WLEDClient_sendCommand(postData)) {
     Serial.printf("[UI] Successfully activated preset %d\n", presetId);
-    // Force UI refresh to show new state
+    // Force immediate UI refresh to show new state
     UIManager_forceNowPlayingUpdate = true;
+    UIManager_needsFullRepaint = true;
+    UIManager_paintPage();
   } else {
     Serial.printf("[UI] Failed to activate preset %d\n", presetId);
   }
@@ -1886,8 +1901,10 @@ void UIManager_changeEffect(int effectId) {
   
   if (WLEDClient_sendCommand(postData)) {
     Serial.printf("[UI] Successfully changed to effect %d\n", effectId);
-    // Force UI refresh to show new state
+    // Force immediate UI refresh to show new state
     UIManager_forceNowPlayingUpdate = true;
+    UIManager_needsFullRepaint = true;
+    UIManager_paintPage();
   } else {
     Serial.printf("[UI] Failed to change effect to %d\n", effectId);
   }
@@ -2024,8 +2041,10 @@ void UIManager_changePalette(int paletteId) {
   
   if (WLEDClient_sendCommand(postData)) {
     Serial.printf("[UI] Successfully changed to palette %d\n", paletteId);
-    // Force UI refresh to show new state
+    // Force immediate UI refresh to show new state
     UIManager_forceNowPlayingUpdate = true;
+    UIManager_needsFullRepaint = true;
+    UIManager_paintPage();
   } else {
     Serial.printf("[UI] Failed to change palette to %d\n", paletteId);
   }
@@ -2653,10 +2672,10 @@ void UIManager_update() {
     }
   }
   
-  // Auto-refresh Now Playing page every 10 seconds - but only update what changed
+  // Auto-refresh Now Playing page every 10 seconds - but update immediately if forced
   uint32_t now = millis();
   if (currentScreenState && UIManager_mapToPhysicalPage(UIManager_currentPage) == 2) { // Now Playing page
-    if (now - UIManager_lastNowPlayingUpdate > NOW_PLAYING_UPDATE_INTERVAL_MS) {
+    if (UIManager_forceNowPlayingUpdate || now - UIManager_lastNowPlayingUpdate > NOW_PLAYING_UPDATE_INTERVAL_MS) {
       UIManager_lastNowPlayingUpdate = now;
       UIManager_checkAndUpdateNowPlaying();
     }

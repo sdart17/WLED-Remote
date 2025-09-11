@@ -452,3 +452,29 @@ void DisplayManager_capturePageBuffer(int page, uint16_t* buffer) {
     buffer[i] = fillColor;
   }
 }
+
+// Rotation function required by main loop debug commands
+void DisplayManager_setRotation(uint8_t rotation) {
+  if (rotation > 3) return;
+  Serial.printf("[DISPLAY] Setting rotation to %d\n", rotation);
+  
+  // Set the rotation on the TFT display
+  DisplayManager_tft.setRotation(rotation);
+  
+  // Clear the screen completely to remove old content
+  DisplayManager_clearScreen();
+  
+  // Force all UI elements to update
+  DisplayManager_forceUpdate();
+  
+  Serial.printf("[DISPLAY] Rotation %d applied, screen cleared and forced update\n", rotation);
+}
+
+// Get current display dimensions (may change with rotation)
+uint16_t DisplayManager_getCurrentWidth() {
+  return DisplayManager_tft.width();
+}
+
+uint16_t DisplayManager_getCurrentHeight() {
+  return DisplayManager_tft.height();
+}

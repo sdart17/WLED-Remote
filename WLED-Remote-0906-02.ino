@@ -15,16 +15,16 @@ extern const uint8_t WLED_INSTANCE_COUNT;
 void ensureValidWLEDInstance();
 const char* getWLEDIP();
 
-// Calculate total pages based on enabled optional pages
-// Page layout: 0=Main, 1=Navigation, 2=Now Playing, 3=Brightness, 4=System, 5=WLED Selection
+// Calculate total pages based on enabled optional pages  
+// Page layout: 0=Main, 1=Now Playing, 2=Navigation, 3=Brightness, 4=System, 5=WLED Selection
 #if ENABLE_NOW_PLAYING_PAGE && ENABLE_BRIGHTNESS_PAGE && ENABLE_WLED_SELECTION_PAGE
-static const int TOTAL_UI_PAGES = 6;  // All pages enabled: Main, Nav, Now Playing, Brightness, System, WLED
+static const int TOTAL_UI_PAGES = 6;  // All pages enabled: Main, Now Playing, Nav, Brightness, System, WLED
 #elif ENABLE_NOW_PLAYING_PAGE && ENABLE_BRIGHTNESS_PAGE && !ENABLE_WLED_SELECTION_PAGE
-static const int TOTAL_UI_PAGES = 5;  // Main, Nav, Now Playing, Brightness, System
+static const int TOTAL_UI_PAGES = 5;  // Main, Now Playing, Nav, Brightness, System
 #elif ENABLE_NOW_PLAYING_PAGE && !ENABLE_BRIGHTNESS_PAGE && ENABLE_WLED_SELECTION_PAGE
-static const int TOTAL_UI_PAGES = 5;  // Main, Nav, Now Playing, System, WLED
+static const int TOTAL_UI_PAGES = 5;  // Main, Now Playing, Nav, System, WLED
 #elif ENABLE_NOW_PLAYING_PAGE && !ENABLE_BRIGHTNESS_PAGE && !ENABLE_WLED_SELECTION_PAGE
-static const int TOTAL_UI_PAGES = 4;  // Main, Nav, Now Playing (with instance dropdown), System
+static const int TOTAL_UI_PAGES = 4;  // Main, Now Playing, Nav, System
 #elif !ENABLE_NOW_PLAYING_PAGE && ENABLE_BRIGHTNESS_PAGE && ENABLE_WLED_SELECTION_PAGE
 static const int TOTAL_UI_PAGES = 5;  // Main, Nav, Brightness, System, WLED
 #elif !ENABLE_NOW_PLAYING_PAGE && ENABLE_BRIGHTNESS_PAGE && !ENABLE_WLED_SELECTION_PAGE
@@ -344,6 +344,9 @@ void DisplayManager_drawTextCentered(int16_t x, int16_t y, int16_t w, int16_t h,
 void DisplayManager_drawButtonRect(int16_t x, int16_t y, int16_t w, int16_t h,
                                    uint16_t fg, uint16_t bg);
 void DisplayManager_resetPerformanceCounters();
+void DisplayManager_setRotation(uint8_t rotation);
+uint16_t DisplayManager_getCurrentWidth();
+uint16_t DisplayManager_getCurrentHeight();
 
 // WiFi Manager - OPTIMIZED  
 void WiFiManager_connect();
@@ -413,6 +416,7 @@ bool TouchManager_isDoubleTapDetected();
 uint8_t TouchManager_getCurrentPressureLevel();
 uint32_t TouchManager_getCurrentPressDuration();
 void TouchManager_printGestureStats();
+void TouchManager_setRotation(uint8_t rotation);
 
 // Twist Manager (Qwiic Twist Rotary Encoder) - ENHANCED
 void TwistManager_init();
@@ -462,6 +466,7 @@ void UIManager_changePalette(int paletteId);
 #endif
 // Experimental font-based UI
 void UIManager_drawTextButton(const IconBtn& btn, bool pressed, const char* iconText);
+void UIManager_setRotation(uint8_t rotation);
 
 // OPTIMIZED: Performance monitoring
 static uint32_t MainLoop_loopCount = 0;
@@ -756,6 +761,36 @@ void loop() {
   uint32_t loopStart = micros();
   
   // OPTIMIZED: Separate update frequencies for different subsystems
+  
+  // DEBUG: Check for rotation test commands
+  if (Serial.available()) {
+    String command = Serial.readStringUntil('\n');
+    command.trim();
+    if (command == "r0") {
+      Serial.println("[DEBUG] Forcing rotation to portrait (0)");
+      DisplayManager_setRotation(0);
+      TouchManager_setRotation(0);
+      UIManager_setRotation(0);
+    }
+    else if (command == "r1") {
+      Serial.println("[DEBUG] Forcing rotation to landscape left (1)");
+      DisplayManager_setRotation(1);
+      TouchManager_setRotation(1);
+      UIManager_setRotation(1);
+    }
+    else if (command == "r2") {
+      Serial.println("[DEBUG] Forcing rotation to portrait inverted (2)");
+      DisplayManager_setRotation(2);
+      TouchManager_setRotation(2);
+      UIManager_setRotation(2);
+    }
+    else if (command == "r3") {
+      Serial.println("[DEBUG] Forcing rotation to landscape right (3)");
+      DisplayManager_setRotation(3);
+      TouchManager_setRotation(3);
+      UIManager_setRotation(3);
+    }
+  }
   
   // HIGH FREQUENCY: Touch input (1ms polling)
   TouchManager_update();

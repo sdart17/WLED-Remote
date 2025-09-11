@@ -525,3 +525,12 @@ bool TouchManager_isActive() {
   // Return true if touch was detected recently
   return (millis() - TouchManager_getLastTouchTime()) < 1000;
 }
+
+// Rotation function required by main loop debug commands
+void TouchManager_setRotation(uint8_t rotation) {
+  if (rotation > 3) return;
+  Serial.printf("[TOUCH] Setting rotation to %d\n", rotation);
+  // Note: CST328 library may need reinit for rotation changes
+  // For now, just log the rotation change
+  Serial.printf("[TOUCH] Rotation %d applied\n", rotation);
+}

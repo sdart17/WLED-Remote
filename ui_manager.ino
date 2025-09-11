@@ -104,12 +104,12 @@ static int UIManager_mapToPhysicalPage(int logicalPage) {
   if (logicalPage < 0) return 0;
   if (logicalPage >= TOTAL_UI_PAGES) return 0;
   
-  // NEW page layout with Now Playing as second page:
+  // CORRECTED page layout with Now Playing as second page:
   // Logical 0 -> Physical 0: Main controls (Home)
   // Logical 1 -> Physical 2: Now Playing (if enabled), else Navigation  
-  // Logical 2 -> Physical 1: Navigation controls
-  // Logical 3 -> Physical 3: Brightness (if enabled)
-  // Logical N -> Physical 4+: System controls
+  // Logical 2 -> Physical 1: Navigation controls (PWR/UP/DOWN/LEFT/RIGHT)
+  // Logical 3 -> Physical 3: System controls (Shutdown/Restart)
+  // Note: Physical pages: 0=Home, 1=Navigation, 2=Now Playing, 3=System
   
   switch (logicalPage) {
     case 0:
@@ -118,9 +118,9 @@ static int UIManager_mapToPhysicalPage(int logicalPage) {
     case 1:
       // Second page -> Now Playing (if enabled), otherwise Navigation
       if (ENABLE_NOW_PLAYING_PAGE) {
-        return 2; // Now Playing
+        return 2; // Now Playing is on physical page 2
       } else {
-        return 1; // Navigation fallback
+        return 1; // Navigation fallback (physical page 1)
       }
       
     case 2:
@@ -2944,4 +2944,21 @@ void UIManager_updateNowPlayingSections(JsonObject state, JsonObject seg,
 // NEW: Check if brightness page is enabled
 bool UIManager_isBrightnessPageEnabled() {
   return ENABLE_BRIGHTNESS_PAGE;
+}
+
+// Rotation support function
+void UIManager_setRotation(uint8_t rotation) {
+  if (rotation > 3) return;
+  
+  Serial.printf("[UI] Changing rotation to %d\n", rotation);
+  
+  // Force complete UI invalidation and repaint
+  UIManager_needsFullRepaint = true;
+  UIManager_lastBrightnessValue = -1; // Force brightness redraw
+  
+  // Clear and repaint the current page
+  DisplayManager_clearScreen();
+  UIManager_paintPage();
+  
+  Serial.printf("[UI] Rotation %d applied with full repaint\n", rotation);
 }
